@@ -11,7 +11,9 @@ measures what that buys on a Churn-sized problem:
   with its own optimizer (model m is built, warmed up, timed and freed before model
   m+1 is built). Its "step" is the time for all K members to take one step each.
   Member m does not depend on K, so members are measured once (interleaved with the
-  pack runs) and the first K of them make up the baseline for pack size K.
+  pack runs) and the first K of them make up the baseline for pack size K. To keep
+  the run short, only ``--seq-members`` members (default 8) are measured; for larger
+  K their summed time is scaled by K / 8 (all members have the same architecture).
   ``--sequential extrapolate`` uses K x the K=1 pack time instead (cheaper).
 
 A timed step covers exactly what the training loop does per batch: gather the
@@ -75,9 +77,10 @@ CHURN_TRAIN_ROWS = 6400
 # (GPU default, CPU smoke default) for the size flags left unset on the command line.
 SIZE_DEFAULTS: dict[str, tuple[Any, Any]] = {
     'ks': ([1, 2, 4, 8, 16, 32], [1, 2, 4]),
-    'steps': (50, 3),
-    'warmup': (10, 1),
-    'repeats': (5, 2),
+    'steps': (10, 3),
+    'warmup': (5, 1),
+    'repeats': (7, 2),
+    'seq_members': (8, 0),
     'n_rows': (CHURN_TRAIN_ROWS, 256),
     'batch_size': (256, 32),
     'd_block': (384, 32),
@@ -95,53 +98,82 @@ MUON_LR = 2e-2
 # ---------------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------------
+def _size_default(name: str) -> str:
+    gpu, cpu = SIZE_DEFAULTS[name]
+    return f'(default {_fmt_default(gpu)}; --cpu: {_fmt_default(cpu)})'
+
+
+def _fmt_default(value: Any) -> str:
+    return ','.join(map(str, value)) if isinstance(value, list) else str(value)
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description=__doc__.split('\n\n')[0],
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
+    p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     p.add_argument(
         '--ks',
         type=_int_list,
-        default=None,
-        help='comma-separated pack sizes (default 1,2,4,8,16,32; --cpu: 1,2,4)',
+        help=f'comma-separated pack sizes {_size_default("ks")}',
     )
-    p.add_argument('--steps', type=int, default=None, help='timed steps per repeat')
-    p.add_argument('--warmup', type=int, default=None, help='untimed warmup steps')
-    p.add_argument('--repeats', type=int, default=None, help='timed repeats (median)')
+    p.add_argument(
+        '--steps', type=int, help=f'timed steps per repeat {_size_default("steps")}'
+    )
+    p.add_argument(
+        '--warmup', type=int, help=f'untimed warmup steps {_size_default("warmup")}'
+    )
+    p.add_argument(
+        '--repeats',
+        type=int,
+        help=f'timed repeats, the median is reported {_size_default("repeats")}',
+    )
     p.add_argument(
         '--amp',
         choices=['none', 'bf16', 'both'],
-        default=None,
-        help='bf16 autocast for the forward pass (default both; --cpu: none)',
+        help=f'bf16 autocast for the forward pass {_size_default("amp")}',
     )
     p.add_argument(
         '--optimizer',
         choices=['adamw', 'muon', 'both'],
         default='both',
-        help='AdamWPack, MuonAdamWPack (Muon on hidden weights) or both',
+        help='AdamWPack, MuonAdamWPack (Muon on hidden weights) or both (default both)',
     )
     p.add_argument(
         '--sequential',
         choices=['measure', 'extrapolate', 'skip'],
         default='measure',
-        help='measure: really train K separate K=1 packs one at a time; '
-        'extrapolate: K x the measured K=1 pack time; skip: pack only',
+        help='measure: really train separate K=1 packs one at a time; '
+        'extrapolate: K x the measured K=1 pack time; skip: pack only '
+        '(default measure)',
     )
-    p.add_argument('--n-rows', type=int, default=None, help='rows in the train set')
-    p.add_argument('--batch-size', type=int, default=None, help='rows/member/step')
-    p.add_argument('--d-block', type=int, default=None, help='hidden width')
-    p.add_argument('--n-blocks', type=int, default=None, help='hidden blocks')
-    p.add_argument('--dropout', type=float, default=0.1, help='dropout rate')
-    p.add_argument('--seed', type=int, default=0)
+    p.add_argument(
+        '--seq-members',
+        type=int,
+        help='with --sequential measure: time at most this many distinct K=1 '
+        'members (0 = all K); for larger K the sequential time is K x their mean '
+        f'member time {_size_default("seq_members")}',
+    )
+    p.add_argument('--n-rows', type=int, help=f'train rows {_size_default("n_rows")}')
+    p.add_argument(
+        '--batch-size',
+        type=int,
+        help=f'rows per member per step {_size_default("batch_size")}',
+    )
+    p.add_argument(
+        '--d-block', type=int, help=f'hidden width {_size_default("d_block")}'
+    )
+    p.add_argument(
+        '--n-blocks', type=int, help=f'hidden blocks {_size_default("n_blocks")}'
+    )
+    p.add_argument(
+        '--dropout', type=float, default=0.1, help='dropout rate (default 0.1)'
+    )
+    p.add_argument('--seed', type=int, default=0, help='seed (default 0)')
     p.add_argument('--cpu', action='store_true', help='run on CPU with tiny sizes')
     p.add_argument(
         '--out',
         type=Path,
-        default=None,
-        help='output JSON path; a Markdown table is written next to it (.md). '
-        f'Default: {DEFAULT_OUT_GPU.relative_to(REPO_ROOT)} '
-        f'({DEFAULT_OUT_CPU.relative_to(REPO_ROOT)} with --cpu)',
+        help='output JSON path; a Markdown table is written next to it (.md) '
+        f'(default {DEFAULT_OUT_GPU.relative_to(REPO_ROOT)}; --cpu: '
+        f'{DEFAULT_OUT_CPU.relative_to(REPO_ROOT)})',
     )
     args = p.parse_args(argv)
 
@@ -157,6 +189,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             p.error(f'--{name.replace("_", "-")} must be >= 1')
     if args.warmup < 0:
         p.error('--warmup must be >= 0')
+    if args.seq_members < 0:
+        p.error('--seq-members must be >= 0')
     if not args.ks or min(args.ks) < 1:
         p.error('--ks must be a non-empty list of positive integers')
     if args.batch_size > args.n_rows:
@@ -407,14 +441,21 @@ def sequential_result(
     sequential run is the sum over members of their r-th block, i.e. the time for
     all K members to take ``steps`` steps each; the peak memory is the maximum over
     members (only one model is alive at a time).
+
+    With ``--seq-members M`` < K only M members are measured and the sum is scaled
+    by K / M (every member has the same architecture and hence the same cost).
     """
     used = members[:pack_size]
-    assert len(used) == pack_size
-    seconds = [sum(block) for block in zip(*(m.seconds for m in used), strict=True)]
+    assert used, 'no measured members'
+    scale = pack_size / len(used)
+    seconds = [
+        scale * sum(block) for block in zip(*(m.seconds for m in used), strict=True)
+    ]
     result = _summarize(seconds, pack_size, args)
     peaks = [m.peak_mem_mib for m in used if m.peak_mem_mib is not None]
     result['peak_mem_mib'] = max(peaks) if peaks else None
-    result['mode'] = 'measured'
+    result['mode'] = 'measured' if len(used) == pack_size else 'measured+scaled'
+    result['n_measured_members'] = len(used)
     return result
 
 
@@ -480,6 +521,20 @@ _OPT_NAMES = {'adamw': 'AdamWPack', 'muon': 'MuonAdamWPack'}
 _AMP_NAMES = {'none': 'float32', 'bf16': 'bf16 autocast'}
 
 
+def _describe_sequential(cfg: dict[str, Any]) -> str:
+    mode, m = cfg['sequential'], cfg.get('seq_members')
+    if mode == 'measure' and m:
+        return (
+            f'measured (K separate K=1 packs, one at a time) for K <= {m}; for '
+            f'larger K, K x the mean time of the {m} measured members'
+        )
+    return {
+        'measure': 'measured (K separate K=1 packs, trained one at a time)',
+        'extrapolate': 'K x the measured K=1 pack step time',
+        'skip': 'not measured',
+    }[mode]
+
+
 def render_markdown(report: dict[str, Any]) -> str:
     env, cfg = report['env'], report['config']
     gpu = env['gpu']
@@ -527,7 +582,7 @@ def render_markdown(report: dict[str, Any]) -> str:
             f'warmup {cfg["warmup"]} steps, then {cfg["repeats"]} repeats x '
             f'{cfg["steps"]} steps (median)'
         ),
-        f'* sequential baseline: {cfg["sequential"]}',
+        f'* sequential baseline: {_describe_sequential(cfg)}',
         '',
     ]
     groups = [
@@ -605,6 +660,12 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     wall_start = time.perf_counter()
     data = make_data(args.n_rows, device, args.seed)
+    if device.type == 'cuda':
+        # Bring the GPU out of its idle power state before the first measurement.
+        trainer = Trainer(max(ks), args, optimizers[0], amps[0], data, device, 0)
+        trainer.run(max(3 * args.warmup, 10), device)
+        del trainer
+        _reset_memory(device)
     results: list[dict[str, Any]] = []
     n_params_per_member = None
     for optimizer in optimizers:
@@ -614,9 +675,10 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
             for k in ks:
                 if args.sequential == 'measure':
                     # Interleave: measure the new sequential members, then the pack.
+                    n_members = min(k, args.seq_members or k)
                     members += [
                         bench_member(m, args, optimizer, amp, data, device)
-                        for m in range(len(members), k)
+                        for m in range(len(members), n_members)
                     ]
                 pack = bench_pack(k, args, optimizer, amp, data, device)
                 n_params_per_member = pack.pop('n_params_per_member')
@@ -665,6 +727,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
             'amps': amps,
             'optimizers': optimizers,
             'sequential': args.sequential,
+            'seq_members': args.seq_members or None,
             'n_rows': args.n_rows,
             'n_num': CHURN_N_NUM,
             'cat_cardinalities': list(CHURN_CAT_CARDS),
