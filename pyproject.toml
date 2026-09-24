@@ -47,8 +47,8 @@ explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
-addopts = "-ra --strict-markers"
+pythonpath = ["src", "tests"]
+addopts = "-ra --strict-markers --import-mode=importlib"
 markers = [
     "gpu: requires a CUDA device (skipped when CUDA is unavailable)",
     "parity: compares against the official TabPack code (skipped when TABPACK_REFERENCE_DIR is unset)",

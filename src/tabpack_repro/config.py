@@ -28,7 +28,8 @@ class DataConfig:
 
     # Relative paths are resolved against ``tabpack_repro.data.get_data_dir()``.
     path: str = 'churn'
-    # Seed of the noisy-quantile transform (the official code uses the run seed).
+    # Seed of the noisy-quantile transform. The official code always uses 0
+    # (lib.data.build_dataset default), independent of the run seed; so do we.
     seed: int = 0
     num_policy: str | None = 'noisy-quantile'
     extract_bin_from_num: bool = True

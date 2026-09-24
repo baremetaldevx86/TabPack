@@ -26,6 +26,28 @@ from torch import Tensor
 PerMember = float | Sequence[float] | Tensor
 
 
+def adamw_update_(
+    p: Tensor,
+    grad: Tensor,
+    exp_avg: Tensor,
+    exp_avg_sq: Tensor,
+    *,
+    lr: float | Tensor,
+    weight_decay: float | Tensor,
+    beta1: float,
+    beta2: float,
+    eps: float,
+    step: int | Tensor,
+) -> None:
+    """One in-place AdamW update of a packed parameter ``p`` (pack dim first).
+
+    lr / weight_decay: Python floats or (K,) tensors (broadcast over trailing dims).
+    step: the 1-based step count used for bias correction; an int, or a (K,) tensor.
+    Shared by AdamWPack and MuonAdamWPack (non-Muon groups).
+    """
+    raise NotImplementedError
+
+
 class AdamWPack(torch.optim.Optimizer):
     def __init__(
         self,
