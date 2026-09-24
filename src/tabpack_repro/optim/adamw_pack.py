@@ -56,8 +56,10 @@ def _to_per_member(value: Any, pack_size: int, name: str) -> float | Tensor:
     tensor with its own storage, on the device of the input (CPU for sequences).
     All values must be finite and non-negative.
     """
-    if isinstance(value, bool):
-        raise TypeError(f'{name} must be a float or a sequence of floats, got a bool')
+    if value is None or isinstance(value, bool | str | bytes):
+        raise TypeError(
+            f'{name} must be a float or a sequence of floats, got {type(value)}'
+        )
     if isinstance(value, int | float):
         value = float(value)
         if not (math.isfinite(value) and value >= 0.0):
@@ -172,12 +174,14 @@ class _PackOptimizer(torch.optim.Optimizer):
 
     * Hyperparameters named in ``_per_member_keys`` are normalized in every param
       group by `_to_per_member` (float, or a float32 (K,) tensor on the params'
-      device, with separate storage per group).
+      device, with separate storage per group). Keys also listed in
+      ``_nullable_keys`` may be None (kept as None, e.g. "fall back to lr").
     * ``shared_step=True``: one optimizer-level int step (`_advance_shared_step`).
     * ``pack_size`` and ``shared_step`` survive pickling / ``copy.deepcopy``.
     """
 
     _per_member_keys: tuple[str, ...] = ()
+    _nullable_keys: tuple[str, ...] = ()
 
     def __init__(
         self,
@@ -195,7 +199,7 @@ class _PackOptimizer(torch.optim.Optimizer):
         defaults = dict(defaults)
         for key in self._per_member_keys:
             if key in defaults:
-                defaults[key] = _to_per_member(defaults[key], pack_size, key)
+                defaults[key] = self._normalize(defaults[key], pack_size, key)
         super().__init__(params, defaults)
         for group in self.param_groups:
             for p in group['params']:
@@ -205,9 +209,20 @@ class _PackOptimizer(torch.optim.Optimizer):
                         f' pack_size={pack_size}, got shape {tuple(p.shape)}'
                     )
 
+    def _normalize(self, value: Any, pack_size: int, key: str) -> float | Tensor | None:
+        if value is None and key in self._nullable_keys:
+            return None
+        return _to_per_member(value, pack_size, key)
+
     def add_param_group(self, param_group: dict[str, Any]) -> None:
         super().add_param_group(param_group)
-        group = self.param_groups[-1]
+        try:
+            self._normalize_group(self.param_groups[-1])
+        except Exception:
+            self.param_groups.pop()  # leave the optimizer as it was
+            raise
+
+    def _normalize_group(self, group: dict[str, Any]) -> None:
         params = group['params']
         if any(p.ndim == 0 for p in params):
             raise ValueError('Packed parameters must have the pack dim first')
@@ -216,12 +231,15 @@ class _PackOptimizer(torch.optim.Optimizer):
             raise ValueError(f'Params of one group have different pack sizes: {sizes}')
         pack_size = sizes.pop() if sizes else self._pack_size
         device = params[0].device if params else None
-        for key in self._per_member_keys:
-            if key in group:
-                value = _to_per_member(group[key], pack_size, key)
-                if isinstance(value, Tensor) and device is not None:
-                    value = value.to(device)
-                group[key] = value
+        values = {
+            key: self._normalize(group[key], pack_size, key)
+            for key in self._per_member_keys
+            if key in group
+        }
+        for key, value in values.items():
+            if isinstance(value, Tensor) and device is not None:
+                value = value.to(device)
+            group[key] = value
 
     def __getstate__(self) -> dict[str, Any]:
         state = super().__getstate__()
