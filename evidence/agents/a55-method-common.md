@@ -58,8 +58,9 @@ Churn data, and (after a28) an artifact round trip.
 
 ## Tests
 
-`tools/dev/py -m pytest tests/methods/test_common.py -q` -> see the final count in the
-Coordination section (35 passed at the last run, all on CPU, under 2 s).
+`tools/dev/py -m pytest tests/methods/test_common.py -q` -> **35 passed** in 0.5 s
+(CPU only; 5 of them are `data`-marked and use the real Churn data). `ruff check` and
+`ruff format --check` pass on both owned source files.
 
 - Fakes (the dependencies were not implemented yet): call order and arguments of
   `setup_run`, the device passed to `.to()`, `env` merging, `y_true` owned copies,
@@ -86,7 +87,10 @@ Coordination section (35 passed at the last run, all on CPU, under 2 s).
   one at a time (the octopus merge failed). a04/a05/a06 hit add/add conflicts with the
   checkpoint stubs; I resolved each with the peer's version (`git checkout --theirs`)
   and checked that the result matches their branch.
-- Merged `feat/a07-data-pipeline` (after #91) and `feat/a29-utils` (after #99).
+- Merged `feat/a07-data-pipeline` (after #91) and `feat/a29-utils` (after #99). After
+  the usage-limit pause I merged `main` (on the coordinator's instruction), then
+  `feat/a28-config` (after #134), and committed the artifact round-trip test that
+  had been waiting on `dump_config`/`load_config`.
 - Posted #76 (status) and #97 (`done`, with the full behavior summary for
   a30/a31/a32/a33). a31 (#102) and a32 (#101) reported that they were merging this
   branch. No questions were addressed to me.

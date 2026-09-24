@@ -486,3 +486,44 @@ def test_setup_run_real_seeds_global_rngs(churn_dir):
         draws.append((torch.rand(4), np.random.rand(4)))
     torch.testing.assert_close(draws[0][0], draws[1][0], rtol=0, atol=0)
     np.testing.assert_array_equal(draws[0][1], draws[1][1])
+
+
+@pytest.mark.data
+def test_real_run_artifacts_round_trip(churn_dir, tmp_path):
+    from tabpack_repro.config import load_config
+    from tabpack_repro.utils.io import load_json
+
+    config = MLPMethodConfig(
+        seed=1,
+        data=DataConfig(path=str(churn_dir)),
+        training=TrainingConfig(device='cpu', amp_dtype=None),
+    )
+    ctx = common.setup_run(config.seed, config.data, config.training)
+    report = common.base_report('mlp', config, config.seed, ctx)
+    members = [_member(0, np.float32(0.84)), _member(1, np.float64(0.86))]
+    report['members'] = members
+    report['best_member'] = common.best_member(members)
+    predictions = {
+        part: torch.rand(ctx.dataset.size(part), dtype=torch.float64)
+        for part in ('val', 'test')
+    }
+    output_dir = tmp_path / 'runs' / 'mlp' / 'seed-1'
+    common.write_run(output_dir, report, predictions, config)
+
+    loaded = load_json(output_dir / 'report.json')
+    assert loaded['schema_version'] == 1
+    assert loaded['method'] == 'mlp'
+    assert loaded['dataset'] == 'churn'
+    assert loaded['seed'] == 1
+    assert loaded['env'] == ctx.env
+    assert loaded['best_member']['id'] == 1
+    assert loaded['best_member']['metrics']['val']['score'] == pytest.approx(0.86)
+    assert load_config(output_dir / 'config.toml') == config
+    with np.load(output_dir / 'predictions.npz') as npz:
+        assert sorted(npz.files) == ['test', 'val']
+        for part in ('val', 'test'):
+            assert npz[part].dtype == np.float32
+            assert npz[part].shape == (_CHURN_SIZES[part],)
+            np.testing.assert_array_equal(
+                npz[part], predictions[part].numpy().astype(np.float32)
+            )
