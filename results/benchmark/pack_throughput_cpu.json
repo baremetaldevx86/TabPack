@@ -1,0 +1,260 @@
+{
+  "env": {
+    "device": "cpu",
+    "gpu": null,
+    "gpu_total_mem_mib": null,
+    "torch": "2.11.0+cu128",
+    "cuda": "12.8",
+    "cudnn": null,
+    "python": "3.12.3",
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+    "cpu_threads": 3,
+    "tf32_matmul": false,
+    "git_commit": "3d693d9",
+    "timestamp_utc": "2026-09-24T17:09:17+00:00",
+    "cpu_count": 12,
+    "load_avg_1min_end": 3.416015625,
+    "load_avg_1min_start": 3.30224609375
+  },
+  "config": {
+    "ks": [
+      1,
+      2,
+      4
+    ],
+    "steps": 3,
+    "warmup": 1,
+    "repeats": 2,
+    "amps": [
+      "none"
+    ],
+    "optimizers": [
+      "adamw",
+      "muon"
+    ],
+    "sequential": "measure",
+    "seq_members": null,
+    "n_rows": 256,
+    "n_num": 7,
+    "cat_cardinalities": [
+      3,
+      2,
+      2,
+      2
+    ],
+    "d_in": 16,
+    "d_block": 32,
+    "n_blocks": 2,
+    "dropout": 0.1,
+    "batch_size": 32,
+    "n_params_per_member": 1633,
+    "lr": 0.001,
+    "weight_decay": 0.01,
+    "muon_lr": 0.02,
+    "seed": 0,
+    "cpu_smoke": true
+  },
+  "results": [
+    {
+      "optimizer": "adamw",
+      "amp": "none",
+      "k": 1,
+      "pack": {
+        "ms_per_step": 2.8996016662858892,
+        "ms_per_step_min": 1.9993099995190278,
+        "ms_per_step_repeats": [
+          1.9993099995190278,
+          3.7998933330527507
+        ],
+        "samples_per_s": 11035.998624248592,
+        "peak_mem_mib": null
+      },
+      "sequential": {
+        "ms_per_step": 3.8020781660937546,
+        "ms_per_step_min": 3.478789333409319,
+        "ms_per_step_repeats": [
+          4.1253669987781905,
+          3.478789333409319
+        ],
+        "samples_per_s": 8416.44979458082,
+        "peak_mem_mib": null,
+        "mode": "measured",
+        "n_measured_members": 1,
+        "member_ms_per_step": [
+          3.8020781660937546
+        ]
+      },
+      "speedup": 1.311241544071759,
+      "speedup_min": 1.7399949653861624
+    },
+    {
+      "optimizer": "adamw",
+      "amp": "none",
+      "k": 2,
+      "pack": {
+        "ms_per_step": 0.9971468340760717,
+        "ms_per_step_min": 0.9183680012938567,
+        "ms_per_step_repeats": [
+          1.0759256668582868,
+          0.9183680012938567
+        ],
+        "samples_per_s": 64183.12510544208,
+        "peak_mem_mib": null
+      },
+      "sequential": {
+        "ms_per_step": 5.91985599991555,
+        "ms_per_step_min": 4.783898999448866,
+        "ms_per_step_repeats": [
+          7.055813000382234,
+          4.783898999448866
+        ],
+        "samples_per_s": 10811.073783030026,
+        "peak_mem_mib": null,
+        "mode": "measured",
+        "n_measured_members": 2,
+        "member_ms_per_step": [
+          3.8020781660937546,
+          2.1177778338217954
+        ]
+      },
+      "speedup": 5.936794660137212,
+      "speedup_min": 5.209130754456816
+    },
+    {
+      "optimizer": "adamw",
+      "amp": "none",
+      "k": 4,
+      "pack": {
+        "ms_per_step": 2.9502760007744655,
+        "ms_per_step_min": 2.1646140012308024,
+        "ms_per_step_repeats": [
+          2.1646140012308024,
+          3.7359380003181286
+        ],
+        "samples_per_s": 43385.771353730706,
+        "peak_mem_mib": null
+      },
+      "sequential": {
+        "ms_per_step": 10.090909832797479,
+        "ms_per_step_min": 8.72377466779047,
+        "ms_per_step_repeats": [
+          11.458044997804487,
+          8.72377466779047
+        ],
+        "samples_per_s": 12684.683752100762,
+        "peak_mem_mib": null,
+        "mode": "measured",
+        "n_measured_members": 4,
+        "member_ms_per_step": [
+          3.8020781660937546,
+          2.1177778338217954,
+          1.2389076667507954,
+          2.932146166131133
+        ]
+      },
+      "speedup": 3.4203273965380028,
+      "speedup_min": 4.030175663111354
+    },
+    {
+      "optimizer": "muon",
+      "amp": "none",
+      "k": 1,
+      "pack": {
+        "ms_per_step": 2.2928198328979006,
+        "ms_per_step_min": 2.1995913339196704,
+        "ms_per_step_repeats": [
+          2.1995913339196704,
+          2.3860483318761303
+        ],
+        "samples_per_s": 13956.61339842613,
+        "peak_mem_mib": null
+      },
+      "sequential": {
+        "ms_per_step": 2.262646000114425,
+        "ms_per_step_min": 2.120242665114347,
+        "ms_per_step_repeats": [
+          2.120242665114347,
+          2.405049335114503
+        ],
+        "samples_per_s": 14142.73377204464,
+        "peak_mem_mib": null,
+        "mode": "measured",
+        "n_measured_members": 1,
+        "member_ms_per_step": [
+          2.262646000114425
+        ]
+      },
+      "speedup": 0.9868398587841336,
+      "speedup_min": 0.9639257222095323
+    },
+    {
+      "optimizer": "muon",
+      "amp": "none",
+      "k": 2,
+      "pack": {
+        "ms_per_step": 2.321768667267558,
+        "ms_per_step_min": 2.321164334716741,
+        "ms_per_step_repeats": [
+          2.321164334716741,
+          2.322372999818375
+        ],
+        "samples_per_s": 27565.19239073042,
+        "peak_mem_mib": null
+      },
+      "sequential": {
+        "ms_per_step": 5.19567583493578,
+        "ms_per_step_min": 4.504865336154277,
+        "ms_per_step_repeats": [
+          5.886486333717282,
+          4.504865336154277
+        ],
+        "samples_per_s": 12317.935535866829,
+        "peak_mem_mib": null,
+        "mode": "measured",
+        "n_measured_members": 2,
+        "member_ms_per_step": [
+          2.262646000114425,
+          2.9330298348213546
+        ]
+      },
+      "speedup": 2.237809437341776,
+      "speedup_min": 1.9407782847499335
+    },
+    {
+      "optimizer": "muon",
+      "amp": "none",
+      "k": 4,
+      "pack": {
+        "ms_per_step": 6.697468000008182,
+        "ms_per_step_min": 6.282422999599173,
+        "ms_per_step_repeats": [
+          7.112513000417191,
+          6.282422999599173
+        ],
+        "samples_per_s": 19111.700123067945,
+        "peak_mem_mib": null
+      },
+      "sequential": {
+        "ms_per_step": 13.825765501678688,
+        "ms_per_step_min": 13.40445900374713,
+        "ms_per_step_repeats": [
+          14.247071999610247,
+          13.40445900374713
+        ],
+        "samples_per_s": 9258.076884383623,
+        "peak_mem_mib": null,
+        "mode": "measured",
+        "n_measured_members": 4,
+        "member_ms_per_step": [
+          2.262646000114425,
+          2.9330298348213546,
+          1.9238508333122204,
+          6.706238833430689
+        ]
+      },
+      "speedup": 2.0643272206245404,
+      "speedup_min": 2.1336447744130496
+    }
+  ],
+  "wall_time_s": 9.385807657999976
+}
