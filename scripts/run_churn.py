@@ -639,6 +639,41 @@ def format_results_table(results: list[StepResult]) -> str:
     return '\n'.join(lines)
 
 
+def _mean_std(entry: Any) -> str | None:
+    if not isinstance(entry, dict):
+        return None
+    mean, std = _number(entry.get('mean')), _number(entry.get('std'))
+    if mean is None:
+        return None
+    return f'{100 * mean:.2f}' + (f' ± {100 * std:.2f}' if std is not None else '')
+
+
+def format_reference(data: Any) -> list[str]:
+    """A few lines with the official numbers of results/reference/churn_official.json
+    (the TabPack headline and the paper's Table 14 MLP/TabPack rows); tolerant of a
+    missing or different structure."""
+    if not isinstance(data, dict):
+        return []
+    lines = []
+    headline = data.get('headline')
+    if isinstance(headline, dict) and headline.get('text'):
+        details = []
+        if headline.get('protocol'):
+            details.append(f'{headline["protocol"]} protocol')
+        if headline.get('n_seeds'):
+            details.append(f'{headline["n_seeds"]} seeds')
+        suffix = f' ({", ".join(details)})' if details else ''
+        lines.append(f'official TabPack: {headline["text"]}{suffix}')
+    table = data.get('paper_table14')
+    table = table.get(DATASET) if isinstance(table, dict) else None
+    if isinstance(table, dict):
+        for name in ('MLP', 'TabPack'):
+            text = _mean_std(table.get(name))
+            if text:
+                lines.append(f'paper Table 14, {name}: {text}')
+    return lines
+
+
 def print_summary(ctx: Context, plan: list[Step]) -> None:
     results = ctx.results
     counts = {s: sum(r.status == s for r in results) for s in ('ok', 'skipped')}
@@ -660,6 +695,11 @@ def print_summary(ctx: Context, plan: list[Step]) -> None:
             print('\n' + to_markdown(ctx.summary).rstrip(), flush=True)
         except Exception as exc:  # noqa: BLE001 (the table is a convenience)
             logger.warning('Could not format the summary table: %s', exc)
+    reference = format_reference(ctx.reference)
+    if reference:
+        print('\nOfficial Churn numbers (test accuracy):', flush=True)
+        for line in reference:
+            print(f'  {line}', flush=True)
     if failed:
         print('\nFailures:', flush=True)
         for r in failed:
@@ -680,7 +720,7 @@ def _log_header(args: argparse.Namespace) -> None:
 
     commit, dirty = git_commit(), git_is_dirty()
     logger.info(
-        'run_churn: methods=%s seeds=%s device=%s force=%s',
+        'methods=%s seeds=%s device=%s force=%s',
         ','.join(args.methods),
         ','.join(map(str, args.seeds)),
         args.device or 'from config',

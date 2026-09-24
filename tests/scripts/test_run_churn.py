@@ -674,6 +674,52 @@ def test_report_scores(report: Any, expected: tuple[Any, Any]) -> None:
     assert rc.report_scores(report) == expected
 
 
+def test_format_reference() -> None:
+    data = {
+        'headline': {'text': '85.75 ± 0.14', 'protocol': 'conservative', 'n_seeds': 5},
+        'paper_table14': {
+            'churn': {
+                'MLP': {'mean': 0.8562, 'std': 0.0018},
+                'TabPack': {'mean': 0.8575},
+                'XGBoost': {'mean': 0.8605, 'std': 0.002},
+            }
+        },
+    }
+    assert rc.format_reference(data) == [
+        'official TabPack: 85.75 ± 0.14 (conservative protocol, 5 seeds)',
+        'paper Table 14, MLP: 85.62 ± 0.18',
+        'paper Table 14, TabPack: 85.75',
+    ]
+    assert rc.format_reference({'headline': {'text': 'x'}}) == ['official TabPack: x']
+    for bad in (None, [], {}, {'headline': 1, 'paper_table14': {'churn': [1]}}):
+        assert rc.format_reference(bad) == []
+
+
+def test_format_reference_of_the_committed_file() -> None:
+    path = REPO_ROOT / 'results' / 'reference' / 'churn_official.json'
+    if not path.is_file():
+        pytest.skip('results/reference/churn_official.json is not available')
+    lines = rc.format_reference(json.loads(path.read_text()))
+    assert lines[0].startswith('official TabPack: ')
+    assert any(line.startswith('paper Table 14, MLP: ') for line in lines)
+
+
+def test_summary_shows_the_reference(
+    tmp_path: Path,
+    recorder: Recorder,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_reference(step: Any, ctx: Any) -> str:
+        ctx.reference = {'headline': {'text': '85.75 ± 0.14'}}
+        return 'loaded'
+
+    monkeypatch.setattr(rc, 'step_reference', fake_reference)
+    assert rc.main(_args(tmp_path, '--methods', 'mlp', '--seeds', '0')) == 0
+    out = capsys.readouterr().out
+    assert 'Official Churn numbers (test accuracy):\n  official TabPack: 85.75' in out
+
+
 @pytest.mark.parametrize(
     ('seconds', 'text'),
     [(0.04, '0.0s'), (12.34, '12.3s'), (125, '2m05s'), (3725, '1h02m05s')],
