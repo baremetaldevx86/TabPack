@@ -186,12 +186,10 @@ def _member_configs(
             raise ValueError('report["member_configs"] must be a list (index = id)')
         configs.update(enumerate(all_configs))
     members = report.get('members')
-    if members is None:
-        members = []
-    if not isinstance(members, list):
+    if members is not None and not isinstance(members, list):
         raise ValueError('report["members"] must be a list')
     seen: set[int] = set()
-    for member in members:
+    for member in members or []:
         member_id = member.get('id') if isinstance(member, dict) else None
         if not _is_int(member_id):
             raise ValueError(f'malformed member entry in the source report: {member!r}')

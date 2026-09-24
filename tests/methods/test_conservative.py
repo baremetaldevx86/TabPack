@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import copy
 import dataclasses
-import json
 import statistics
 from pathlib import Path
 from typing import Any
@@ -16,7 +15,6 @@ from typing import Any
 import numpy as np
 import pytest
 
-from tabpack_repro import config as config_module
 from tabpack_repro.config import (
     ConservativeEvalConfig,
     MLPMethodConfig,
@@ -25,6 +23,8 @@ from tabpack_repro.config import (
     TabPackConfig,
     TrainingConfig,
     config_to_dict,
+    dump_config,
+    load_config,
 )
 from tabpack_repro.methods import conservative, tabpack
 from tabpack_repro.utils.io import dump_json, load_json, to_jsonable
@@ -65,6 +65,7 @@ def _write_source(
     *,
     ids: list[int] | None = None,
     member_ids: list[int] | None = None,
+    member_configs: list[Any] | None = None,
     config: TabPackConfig | None = None,
 ) -> dict[str, Any]:
     """Write a fake finished TabPack main run into run_dir."""
@@ -102,6 +103,8 @@ def _write_source(
         'env': {'device': 'cpu', 'gpu': None, 'torch': 'x', 'git_commit': None},
         'history': [],
     }
+    if member_configs is not None:
+        report['member_configs'] = member_configs
     dump_json(run_dir / 'report.json', report)
     return report
 
@@ -131,6 +134,7 @@ class FakeTabPack:
                 {'id': i, 'best_step': 1, 'config': c, 'metrics': {}}
                 for i, c in enumerate(config.configs)
             ],
+            'member_configs': config.configs,
             'ensemble': {'ids': [0], 'steps': [1], 'size': 1, 'n_unique': 1},
             'best_member': None,
             'n_epochs': 1,
@@ -141,7 +145,7 @@ class FakeTabPack:
         }
         dump_json(output_dir / 'report.json', report)
         np.savez(output_dir / 'predictions.npz', val=np.zeros(2), test=np.zeros(2))
-        (output_dir / 'config.toml').write_text('# fake\n')
+        dump_config(config, output_dir / 'config.toml')
         return report
 
     @property
@@ -154,49 +158,6 @@ def fake_tabpack(monkeypatch) -> FakeTabPack:
     fake = FakeTabPack()
     monkeypatch.setattr(tabpack, 'run', fake)
     return fake
-
-
-def _a28_ready() -> bool:
-    try:
-        config_module.config_from_dict({'method': 'mlp'})
-    except NotImplementedError:
-        return False
-    return True
-
-
-def _fake_from_dict(data: dict[str, Any]):
-    import typing
-
-    def build(cls, values):
-        hints = typing.get_type_hints(cls)
-        kwargs = {}
-        for f in dataclasses.fields(cls):
-            if f.name in values:
-                value = values[f.name]
-                if dataclasses.is_dataclass(hints[f.name]):
-                    value = build(hints[f.name], value)
-                kwargs[f.name] = value
-        return cls(**kwargs)
-
-    return build(config_module.CONFIG_CLASSES[data['method']], data)
-
-
-@pytest.fixture(autouse=True)
-def config_io(monkeypatch):
-    """Until a28 lands: JSON-based stand-ins for the config loaders."""
-    if _a28_ready():
-        return
-
-    def dump_config(config, path):
-        Path(path).write_text(json.dumps(config_to_dict(config)))
-
-    def load_config(path):
-        return _fake_from_dict(json.loads(Path(path).read_text()))
-
-    for module in (config_module, conservative):
-        monkeypatch.setattr(module, 'config_from_dict', _fake_from_dict)
-        monkeypatch.setattr(module, 'dump_config', dump_config)
-        monkeypatch.setattr(module, 'load_config', load_config)
 
 
 @pytest.fixture
@@ -310,7 +271,7 @@ def test_single_seed_has_zero_std(fake_tabpack, source_run, tmp_path):
 def test_aggregate_config_toml_round_trips(fake_tabpack, source_run, tmp_path):
     out = tmp_path / 'out'
     _run(source_run, out, n_seeds=2)
-    assert conservative.load_config(out / 'config.toml') == ConservativeEvalConfig(
+    assert load_config(out / 'config.toml') == ConservativeEvalConfig(
         source_run=str(source_run), n_seeds=2
     )
 
@@ -441,7 +402,7 @@ def test_config_toml_is_a_fallback_for_reports_without_config(fake_tabpack, tmp_
     report = _write_source(run_dir)
     del report['config']
     dump_json(run_dir / 'report.json', report)
-    conservative.dump_config(_source_config(), run_dir / 'config.toml')
+    dump_config(_source_config(), run_dir / 'config.toml')
 
     _run(run_dir, tmp_path / 'out', n_seeds=1)
     ((seed_config, _),) = fake_tabpack.calls
@@ -469,6 +430,41 @@ def test_member_without_config_raises(fake_tabpack, tmp_path):
     dump_json(run_dir / 'report.json', report)
     with pytest.raises(ValueError, match=r'\[1\] have no config'):
         _run(run_dir, tmp_path / 'out', n_seeds=1)
+
+
+def test_unfinished_ensemble_members_use_member_configs(fake_tabpack, tmp_path):
+    # Ensemble ids 3 and 5 never finished: they are only in member_configs.
+    run_dir = tmp_path / 'src'
+    _write_source(
+        run_dir,
+        member_ids=[0, 1, 2, 4],
+        member_configs=[_member_config(i) for i in range(6)],
+    )
+    _run(run_dir, tmp_path / 'out', n_seeds=1)
+    ((seed_config, _),) = fake_tabpack.calls
+    assert seed_config.configs == [_member_config(i) for i in (1, 3, 5)]
+
+
+def test_member_configs_alone_are_enough(fake_tabpack, tmp_path):
+    run_dir = tmp_path / 'src'
+    report = _write_source(
+        run_dir, member_configs=[_member_config(i) for i in range(6)]
+    )
+    del report['members']
+    dump_json(run_dir / 'report.json', report)
+    _run(run_dir, tmp_path / 'out', n_seeds=1)
+    ((seed_config, _),) = fake_tabpack.calls
+    assert seed_config.configs == [_member_config(i) for i in (1, 3, 5)]
+
+
+def test_member_configs_disagreeing_with_members_raise(fake_tabpack, tmp_path):
+    run_dir = tmp_path / 'src'
+    configs = [_member_config(i) for i in range(6)]
+    configs[4] = _member_config(0)
+    _write_source(run_dir, member_configs=configs)
+    with pytest.raises(ValueError, match='member 4 has different configs'):
+        _run(run_dir, tmp_path / 'out', n_seeds=1)
+    assert fake_tabpack.calls == []
 
 
 def test_duplicate_member_ids_raise(fake_tabpack, tmp_path):
