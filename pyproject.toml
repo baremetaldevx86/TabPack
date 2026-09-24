@@ -59,7 +59,7 @@ markers = [
 [tool.ruff]
 line-length = 88
 target-version = "py312"
-extend-exclude = [".worktrees", "evidence", "data", "runs"]
+extend-exclude = [".worktrees", ".reference", "evidence/*", "data/*", "runs/*"]
 
 [tool.ruff.lint]
 extend-select = ["I", "UP", "E501", "B", "RUF"]
