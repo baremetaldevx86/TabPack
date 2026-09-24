@@ -1,0 +1,68 @@
+[project]
+name = "tabpack-repro"
+version = "0.1.0"
+description = "A small, from-scratch reproduction of TabPack (ICML 2026) on the Churn dataset: ordinary MLP vs homogeneous MLP ensemble vs reduced heterogeneous TabPack."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "matplotlib>=3.9,<4",
+    "numpy>=2,<3",
+    "optuna>=4,<5",
+    "pandas>=2.2,<3",
+    "scikit-learn>=1.5,<2",
+    "scipy>=1.13,<2",
+    "torch>=2.7",
+    "tqdm>=4.66,<5",
+]
+
+[project.scripts]
+tabpack-repro = "tabpack_repro.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9",
+    "ruff>=0.12,<1",
+]
+# Only needed by tests/parity, which import the official TabPack code
+# (cloned outside this repository) purely for numerical comparison.
+parity = [
+    "delu>=0.0.26,<0.1.0",
+    "loguru>=0.7.3,<1",
+]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv]
+default-groups = ["dev", "parity"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra --strict-markers"
+markers = [
+    "gpu: requires a CUDA device (skipped when CUDA is unavailable)",
+    "parity: compares against the official TabPack code (skipped when TABPACK_REFERENCE_DIR is unset)",
+    "slow: slower integration tests",
+    "data: requires the real Churn dataset under data/churn",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+extend-exclude = [".worktrees", "evidence", "data", "runs"]
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "E501", "B", "RUF"]
+
+[tool.ruff.format]
+quote-style = "single"

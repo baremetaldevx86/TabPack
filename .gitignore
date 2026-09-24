@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+build/
+dist/
+
+# Data and large artifacts (download with `tabpack-repro download`)
+data/
+runs/**/*.npz
+runs/**/*.pt
+
+# Official TabPack clone used only by parity tests / reference extraction
+.reference/
+
+# Parallel-agent infrastructure (archived into evidence/ at checkpoints)
+.worktrees/
+.coord/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+._*
