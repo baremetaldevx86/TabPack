@@ -212,15 +212,17 @@ def test_resume_skips_completed_runs(
     _write_report(tmp_path / 'runs' / 'tabpack-conservative')
     code = rc.main(_args(tmp_path, '--seeds', '0', '--skip-download'))
     assert code == 0
+    # The conservative step is always called: conservative.run resumes by itself.
     assert recorder.calls == [
         'homogeneous/seed-0',
         'tabpack/seed-0',
+        'tabpack-conservative',
         'summarize',
         'plots',
         'reference',
     ]
     out = capsys.readouterr().out
-    assert '5 ok, 2 skipped, 0 failed' in out
+    assert '6 ok, 1 skipped, 0 failed' in out
     # The table shows the scores of the skipped (previously finished) run.
     mlp_row = next(line for line in out.splitlines() if line.startswith('mlp/seed-0'))
     assert 'skipped' in mlp_row and 'val 0.9000, test 0.8750' in mlp_row
@@ -316,6 +318,7 @@ def test_dry_run_prints_the_plan_and_runs_nothing(
 
     monkeypatch.setattr(rc, 'load_method_config', fake_load)
     _write_report(tmp_path / 'runs' / 'mlp' / 'seed-0')
+    _write_report(tmp_path / 'runs' / 'tabpack-conservative')
     argv = _args(
         tmp_path,
         '--dry-run',
@@ -337,6 +340,8 @@ def test_dry_run_prints_the_plan_and_runs_nothing(
     assert lines[0].startswith('Plan (9 steps; dry run')
     mlp0 = next(line for line in lines if 'mlp/seed-0' in line)
     assert ' skip ' in mlp0
+    conservative = next(line for line in lines if 'tabpack-conservative ' in line)
+    assert ' resume ' in conservative
     mlp1 = next(line for line in lines if 'mlp/seed-1' in line)
     assert ' run ' in mlp1 and 'seed=1, device=cpu' in mlp1
     assert str(tmp_path / 'runs' / 'mlp' / 'seed-1') in mlp1

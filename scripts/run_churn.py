@@ -17,7 +17,8 @@ Steps, in order (each one is a function below, so tests can replace it):
 6. ``reference``: refresh ``results/reference/churn_official.json`` from the official
    clone when it is available, otherwise load the saved file.
 
-Runs whose ``report.json`` already exists are skipped (resume) unless ``--force``.
+Runs whose ``report.json`` already exists are skipped (resume) unless ``--force``;
+the conservative step resumes by itself (finished seeds are only re-aggregated).
 A failing step is logged and the remaining steps still run; the script exits with 1
 if any step failed. Default paths are relative to the repository root.
 
@@ -239,11 +240,18 @@ def build_plan(args: argparse.Namespace) -> list[Step]:
     return plan
 
 
+def has_report(step: Step) -> bool:
+    return step.output is not None and (step.output / REPORT).is_file()
+
+
 def is_complete(step: Step) -> bool:
-    """A run/conservative step is complete when its report.json exists."""
-    if step.kind not in ('run', 'conservative') or step.output is None:
-        return False
-    return (step.output / REPORT).is_file()
+    """A single run is complete (and skipped) when its report.json exists.
+
+    The conservative step is never skipped here: methods.conservative.run resumes
+    by itself (finished seeds are only re-aggregated), which also picks up a
+    changed n_seeds.
+    """
+    return step.kind == 'run' and has_report(step)
 
 
 def describe_step(step: Step, args: argparse.Namespace) -> str:
@@ -279,12 +287,14 @@ def print_plan(plan: list[Step], args: argparse.Namespace) -> int:
         flush=True,
     )
     for i, step in enumerate(plan, 1):
-        if is_complete(step) and not args.force:
-            action = 'skip'
-        elif is_complete(step):
-            action = 'rerun (--force)'
-        else:
+        if not has_report(step) or step.kind not in ('run', 'conservative'):
             action = 'run'
+        elif args.force:
+            action = 'rerun (--force)'
+        elif is_complete(step):
+            action = 'skip'
+        else:
+            action = 'resume'
         print(
             f'  [{i:>2}/{len(plan)}] {step.name:<{width}}  {action:<15} '
             f'{describe_step(step, args)}',
