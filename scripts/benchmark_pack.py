@@ -42,6 +42,7 @@ import argparse
 import contextlib
 import gc
 import json
+import os
 import platform
 import statistics
 import subprocess
@@ -79,7 +80,7 @@ SIZE_DEFAULTS: dict[str, tuple[Any, Any]] = {
     'ks': ([1, 2, 4, 8, 16, 32], [1, 2, 4]),
     'steps': (10, 3),
     'warmup': (5, 1),
-    'repeats': (7, 2),
+    'repeats': (11, 2),
     'seq_members': (8, 0),
     'n_rows': (CHURN_TRAIN_ROWS, 256),
     'batch_size': (256, 32),
@@ -456,6 +457,10 @@ def sequential_result(
     result['peak_mem_mib'] = max(peaks) if peaks else None
     result['mode'] = 'measured' if len(used) == pack_size else 'measured+scaled'
     result['n_measured_members'] = len(used)
+    # Evidence for the scaling: the median step time of every measured member.
+    result['member_ms_per_step'] = [
+        statistics.median(1000.0 * x / args.steps for x in m.seconds) for m in used
+    ]
     return result
 
 
@@ -495,8 +500,17 @@ def describe_env(device: torch.device) -> dict[str, Any]:
         'tf32_matmul': torch.backends.cuda.matmul.allow_tf32,
         'git_commit': _git_commit(),
         'timestamp_utc': datetime.now(UTC).isoformat(timespec='seconds'),
+        'cpu_count': os.cpu_count(),
+        'load_avg_1min_end': _load_avg(),
     }
     return env
+
+
+def _load_avg() -> float | None:
+    try:
+        return os.getloadavg()[0]
+    except (AttributeError, OSError):
+        return None
 
 
 def _git_commit() -> str | None:
@@ -551,9 +565,14 @@ def render_markdown(report: dict[str, Any]) -> str:
         '* **ms/step**: median wall-clock time for all K members to take one step',
         "  (sequential: sum of the K members' step times).",
         '* **samples/s**: K x batch_size rows per step / step time.',
-        '* **speedup**: sequential ms/step / pack ms/step.',
+        '* **speedup**: sequential ms/step / pack ms/step (medians).',
+        '* **speedup (min)**: the same ratio of the fastest blocks, which is less',
+        '  sensitive to CPU contention from other processes (the steps are',
+        '  launch-bound, so a busy CPU slows them down).',
         '* **peak MiB**: `torch.cuda.max_memory_allocated` over the configuration',
         '  (sequential: models live one at a time).',
+        '* At K = 1 both sides run identical work, so the distance of the K = 1',
+        '  speedup from 1.00x shows the measurement noise of the run.',
         '',
         '## Environment',
         '',
@@ -564,6 +583,11 @@ def render_markdown(report: dict[str, Any]) -> str:
         ),
         f'* platform: {env["platform"]}; TF32 matmul: {env["tf32_matmul"]}',
         f'* git commit: `{env["git_commit"]}`; run at {env["timestamp_utc"]}',
+        (
+            f'* host load: 1-min load average {_fmt(env["load_avg_1min_start"])} at '
+            f'start, {_fmt(env["load_avg_1min_end"])} at the end '
+            f'({env["cpu_count"]} logical CPUs)'
+        ),
         '',
         '## Configuration',
         '',
@@ -599,7 +623,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         f'* {_OPT_NAMES[opt]}, {_AMP_NAMES[amp]}: K = {rows[-1]["k"]} -> '
         f'{_fmt(rows[-1]["speedup"])}x faster than sequential '
         f'({_fmt(rows[-1]["pack"]["ms_per_step"])} vs '
-        f'{_fmt(rows[-1]["sequential"]["ms_per_step"])} ms per step of all members)'
+        f'{_fmt(rows[-1]["sequential"]["ms_per_step"])} ms per step of all members; '
+        f'{_fmt(rows[-1]["speedup_min"])}x from the fastest blocks)'
         for opt, amp, rows in groups
         if rows[-1]['sequential'] is not None
     ]
@@ -610,19 +635,20 @@ def render_markdown(report: dict[str, Any]) -> str:
             f'## {_OPT_NAMES[opt]}, {_AMP_NAMES[amp]}',
             '',
             (
-                '| K | pack ms/step | sequential ms/step | speedup '
+                '| K | pack ms/step | sequential ms/step | speedup | speedup (min) '
                 '| pack samples/s | sequential samples/s '
                 '| pack peak MiB | sequential peak MiB |'
             ),
-            '| --: | --: | --: | --: | --: | --: | --: | --: |',
+            '| --: | --: | --: | --: | --: | --: | --: | --: | --: |',
         ]
         for r in rows:
             pack, seq = r['pack'], r['sequential'] or {}
-            speedup = r['speedup']
+            speedup, speedup_min = r['speedup'], r['speedup_min']
             lines.append(
                 f'| {r["k"]} | {_fmt(pack["ms_per_step"])} '
                 f'| {_fmt(seq.get("ms_per_step"))} '
                 f'| {_fmt(speedup)}{"x" if speedup is not None else ""} '
+                f'| {_fmt(speedup_min)}{"x" if speedup_min is not None else ""} '
                 f'| {_fmt(pack["samples_per_s"], 0)} '
                 f'| {_fmt(seq.get("samples_per_s"), 0)} '
                 f'| {_fmt(pack["peak_mem_mib"], 1)} '
@@ -658,6 +684,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     if args.sequential == 'extrapolate' and 1 not in ks:
         ks = [1, *ks]  # the extrapolation needs the K=1 pack time
 
+    load_start = _load_avg()
     wall_start = time.perf_counter()
     data = make_data(args.n_rows, device, args.seed)
     if device.type == 'cuda':
@@ -691,9 +718,10 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
                     seq = extrapolate_sequential(k, k1_pack, args)
                 else:
                     seq = None
-                speedup = (
-                    None if seq is None else seq['ms_per_step'] / pack['ms_per_step']
-                )
+                speedup = speedup_min = None
+                if seq is not None:
+                    speedup = seq['ms_per_step'] / pack['ms_per_step']
+                    speedup_min = seq['ms_per_step_min'] / pack['ms_per_step_min']
                 results.append(
                     {
                         'optimizer': optimizer,
@@ -702,6 +730,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
                         'pack': pack,
                         'sequential': seq,
                         'speedup': speedup,
+                        'speedup_min': speedup_min,
                     }
                 )
                 print(
@@ -718,7 +747,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 )
 
     report: dict[str, Any] = {
-        'env': describe_env(device),
+        'env': describe_env(device) | {'load_avg_1min_start': load_start},
         'config': {
             'ks': ks,
             'steps': args.steps,
