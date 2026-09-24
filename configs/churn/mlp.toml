@@ -1,0 +1,74 @@
+# Ordinary MLP on Churn: method "mlp" (tabpack_repro.config.MLPMethodConfig).
+#
+# One plain MLP trained with AdamW, with fixed defaults that were never tuned on
+# Churn, and early stopping on validation accuracy. The final prediction is the
+# model at its best validation epoch. See docs/EXPERIMENT.md, sections 3.1 and 3.2.
+#
+# Every value below equals the dataclass default in src/tabpack_repro/config.py,
+# the source of truth; tests/test_config.py checks that they agree. Omitted keys
+# take their defaults, unknown keys are an error. TOML has no null: the string
+# "none" means None in the optional string settings (the three *_policy keys and
+# training.amp_dtype).
+#
+# Run (docs/EXPERIMENT.md, section 8):
+#   uv run python -m tabpack_repro run --config configs/churn/mlp.toml \
+#     --seed 0 --output runs/churn/mlp/seed-0
+
+method = "mlp"
+# Run seed: initialization, dropout masks and batch order. `--seed` overrides it.
+seed = 0
+
+# Data and preprocessing, identical for all methods (docs/EXPERIMENT.md, section 2).
+[data]
+# Dataset directory. A relative path is resolved against the data directory
+# ($TABPACK_DATA_DIR, by default data/), so "churn" means data/churn.
+path = "churn"
+# Seed of the noisy-quantile transform. Always 0, independent of the run seed, as
+# in the official code, so every run sees the same preprocessed data.
+seed = 0
+# Numerical features: QuantileTransformer to a normal distribution, fitted on the
+# train part plus N(0, 1e-5) noise.
+num_policy = "noisy-quantile"
+# Move numerical columns with exactly two unique values to the binary features
+# (changes nothing on Churn).
+extract_bin_from_num = true
+# Binary features are converted to categorical ones.
+bin_policy = "convert-to-cat"
+# Categorical features are ordinal-encoded (the model then one-hot encodes them).
+cat_policy = "ordinal"
+
+# Architecture: n_blocks x [Linear -> activation -> Dropout], then a linear head.
+[model]
+n_blocks = 3
+# Width of every block.
+d_block = 384
+# Dropout after every block.
+dropout = 0.1
+# "ReLU", "GELU" or "SiLU".
+activation = "ReLU"
+
+# torch.optim.AdamW. Weight decay applies to weight matrices only (0 on biases).
+[optimizer]
+lr = 0.001
+weight_decay = 0.0001
+beta1 = 0.9
+beta2 = 0.999
+eps = 1e-08
+
+# Training loop, identical for all methods (docs/EXPERIMENT.md, section 3.1).
+[training]
+# 256 gives 25 steps per epoch on Churn's 6,400 training rows.
+batch_size = 256
+# Early stopping on val accuracy: stop after patience + 1 = 17 consecutive epochs
+# without a strict improvement, and keep the best-val checkpoint.
+patience = 16
+# -1 means no epoch limit: only early stopping ends training.
+max_epochs = -1
+# Batch size for evaluation; 32768 evaluates each whole part in one batch.
+eval_batch_size = 32768
+# Autocast dtype on CUDA: "bfloat16", "float16" or "none" (float32). CPU runs are
+# always float32.
+amp_dtype = "bfloat16"
+# "auto" picks CUDA when available, else the CPU; or e.g. "cpu", "cuda:0".
+# `--device` overrides it.
+device = "auto"
