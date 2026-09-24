@@ -18,8 +18,8 @@ real cached bundle and matches `data/churn` byte for byte.
 * `tests/data/test_download.py`: 44 tests.
 * `evidence/agents/a03-data-download.md`: this report.
 
-Both source files were added with `git add -f` because of the `.gitignore` issue
-described under *Open issues*.
+Both source files were first added with `git add -f` because of the `.gitignore`
+issue described under *Coordination*. The integrator has since fixed it.
 
 ## Design decisions
 
@@ -107,9 +107,10 @@ The tests cover:
 * The slow data test on the real bundle (about 5-6 s, mostly gzip decompression in
   Python).
 
-To run the tests before the integrator's fix, I copied the untracked skeleton data
-package (`__init__`, `dataset`, `numerical`, `categorical`, `pipeline`) from the main
-checkout into this worktree. These files are ignored by git and were not committed.
+Before the integrator's fix, I ran the tests against untracked copies of the
+skeleton data package from the main checkout. I deleted those copies before merging
+`checkpoint/00b-data-fix`. After that merge, the command above gives
+`44 passed`, and `tests/test_package_imports.py` passes as well.
 
 ## Coordination
 
@@ -117,24 +118,20 @@ checkout into this worktree. These files are ignored by git and were not committ
 * Posted `blocker` #6 to `integrator` about the `.gitignore` issue.
   a04 (#7), a05 (#9), a06 (#14) and a07 (#12) reported the same problem
   independently and used the same workaround.
+* The root `.gitignore` rule `data/` also matched `src/tabpack_repro/data/` and
+  `tests/data/`. As a result, `checkpoint/00-skeleton` had no data package and
+  `tests/conftest.py` could not be imported.
+* The integrator fixed this in `checkpoint/00b-data-fix` (#60), and I merged that
+  tag.
+  * The merge had an add/add conflict on `download.py`, which I resolved by keeping
+    this branch's version, as #60 instructs.
+  * The skeleton on the tag is identical to the contract I implemented, so no part
+    of the contract was lost.
 * Received no questions addressed to a03, and merged no peer branches because
   nothing here depends on another module.
 
 ## Open issues
 
-* **Blocker for the integrator:** the root `.gitignore` rule `data/` (line 12) also
-  matches `src/tabpack_repro/data/` and `tests/data/`. As a result:
-  * `checkpoint/00-skeleton` has no `tabpack_repro.data` package.
-  * `tests/conftest.py` fails to import in a fresh worktree.
-  * `ruff` (which respects gitignore and has `extend-exclude = ["data"]`) skips these
-    paths unless files are named explicitly.
-
-  Fix: anchor the rules as `/data/` and `/data` in `pyproject.toml`, then commit
-  `src/tabpack_repro/data/__init__.py` together with the other skeleton files.
-
-  If the integrator commits the skeleton `download.py` on `main`, merging this
-  branch will conflict (add/add) on that file. Resolve it by taking this branch's
-  version.
 * When the cached bundle's hash does not match, it is re-downloaded once instead of
   raising immediately, a slightly more forgiving reading of the contract. A
   mismatch after a fresh download still deletes the file and raises `RuntimeError`.
