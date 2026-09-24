@@ -15,7 +15,7 @@ removal, device moves, closures, `state_dict`/`load_state_dict` (also through
 * `src/tabpack_repro/optim/adamw_pack.py`: `adamw_update_`, `AdamWPack`, and the private
   helpers `_PackOptimizer` (a base class a16 can reuse), `_to_per_member` and
   `_SHARED_STATE_KEY`.
-* `tests/optim/test_adamw_pack.py`: 38 tests (2 of them need CUDA).
+* `tests/optim/test_adamw_pack.py`: 40 tests (2 of them need CUDA).
 * `evidence/agents/a15-optim-adamw.md`: this report.
 
 ## Design decisions
@@ -59,6 +59,10 @@ removal, device moves, closures, `state_dict`/`load_state_dict` (also through
   before it mutates anything.
 * **Pickling.** `__getstate__` also saves `_pack_size` and `_shared_step`. The torch
   base class would otherwise drop them in `copy.deepcopy`.
+* **`_PackOptimizer` for subclasses.** a16 asked for it in #83. A subclass sets
+  `_per_member_keys`, and `_nullable_keys` lists the keys that may be None (kept as
+  None, e.g. `muon_lr`). If `add_param_group` fails validation, it removes the group
+  again, so the optimizer is left unchanged.
 
 ### Differences from the official `AdamWPack` (`.reference/tabpack/src/project/optim.py`)
 
@@ -91,7 +95,7 @@ params, a zero-wd bias group, and lr/wd as lists or floats:
 
 ```
 tools/dev/py -m pytest tests/optim/test_adamw_pack.py -q
-36 passed, 2 skipped (CUDA hidden) in ~4 s
+38 passed, 2 skipped (CUDA hidden) in ~6 s
 TABPACK_GPU=1 tools/dev/py -m pytest tests/optim/test_adamw_pack.py -q -k cuda
 2 passed
 tools/dev/py -m ruff check / ruff format --check (owned files): clean
@@ -109,7 +113,9 @@ The tests cover:
 * **Hyperparameter storage.** The group values are normalized: dtype, shape, device,
   floats kept as floats, and no aliasing. With zero grads, the zero-wd group override
   leaves the biases unchanged and scales the weights by exactly `1 - lr*wd`.
-* **Validation errors.**
+* **Validation errors**, including rejecting `None` and restoring the optimizer after a
+  failed `add_param_group`.
+* **Nullable keys** in a `_PackOptimizer` subclass.
 * **Step counters.** The shared step counts only `step()` calls that have gradients.
   The per-param step is an int64 `(K,)` tensor with correct counts when some grads
   are None. Shared and per-param steps agree when all grads exist.
@@ -136,6 +142,9 @@ The tests cover:
 * Answered #25 from a16 (MuonAdamWPack state layout; the reusable `_PackOptimizer`
   helpers) with #84.
 * Answered #26 from a17 (the state and group layout for `optimizer_select_`) with #85.
+* Posted `done` #92.
+* a16 asked in #83 to subclass `_PackOptimizer`, keep its private names stable and
+  support None values. I added `_nullable_keys` and answered on the board.
 * Merged no peer branches, because I have no dependencies.
 
 ## Open issues
