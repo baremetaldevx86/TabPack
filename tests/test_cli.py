@@ -678,3 +678,35 @@ def test_run_real_invalid_config_exits_1(
     assert lines[0].startswith(f'tabpack-repro run: error: invalid config file {path}')
     assert message in lines[0]
     assert not any(f.calls for f in fakes.values())
+
+
+# ----------------------------------------------------------------------------------
+# End to end with the real MLP method (a30) on the real Churn data
+# ----------------------------------------------------------------------------------
+
+
+@pytest.mark.data
+def test_run_real_mlp_on_churn(churn_dir, tmp_path, capsys) -> None:
+    path = tmp_path / 'mlp-tiny.toml'
+    path.write_text(
+        'method = "mlp"\n'
+        f'[data]\npath = "{churn_dir.as_posix()}"\n'
+        '[model]\nn_blocks = 1\nd_block = 16\n'
+        '[training]\nmax_epochs = 1\n'
+    )
+    output = tmp_path / 'runs' / 'mlp' / 'seed-1'
+    argv = ['run', '--config', str(path), '--output', str(output)]
+    assert cli.main([*argv, '--seed', '1', '--device', 'cpu']) == 0
+
+    report = json.loads((output / 'report.json').read_text())
+    assert report['method'] == 'mlp'
+    assert report['seed'] == report['config']['seed'] == 1
+    assert report['config']['training']['device'] == 'cpu'
+    assert report['config']['model']['d_block'] == 16
+    assert (output / 'predictions.npz').is_file()
+    assert (output / 'config.toml').is_file()
+    result, out_line = capsys.readouterr().out.splitlines()
+    test_score = report['metrics']['test']['score']
+    assert result.startswith('mlp  seed=1  val_score=')
+    assert f'test_score={test_score:.5f}' in result
+    assert out_line == f'output: {output}'
