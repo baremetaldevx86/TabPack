@@ -75,6 +75,9 @@ and keep `evidence/` byte-exact.
   with a note. `--paths tests/parity` run from outside the checkout reports pytest SKIP (no tests
   collected). `--paths .editorconfig` skips all three steps. `--paths`, `--bogus`,
   `--paths nope.py` and `--paths /etc/hosts` each exit 2.
+* After merging `checkpoint/00b-data-fix` (integrator #60), `tools/dev/check.sh` on this
+  branch gives **PASS**: `ruff check` passed, 59 files were already formatted (the data
+  package is now included), and pytest reported `1 passed`.
 * Pre-commit, run with `uvx pre-commit` in a scratch `git init` copy of the skeleton
   plus these files (the worktree was untouched, and `PRE_COMMIT_HOME` pointed at the scratchpad):
   `validate-config` passed. `run --all-files` passed all pre-commit-hooks, including a
@@ -92,17 +95,18 @@ and keep `evidence/` byte-exact.
   skip the data package. The skeleton data files in the main checkout already fail ruff:
   E501 in `download.py:35` and `numerical.py:25`, I001 in four files, and two files need
   `ruff format`. Suggested fix: anchor both patterns (`/data/`).
-* No messages addressed to me. I merged no peer branches because the task has no
-  dependencies.
+* Received integrator `contract` #60 (skeleton fix, crediting #56). As instructed, I
+  merged `checkpoint/00b-data-fix` (`git merge --no-edit`) with no conflicts. That fix
+  anchors `.gitignore` to `/data/` and ruff's excludes to `data/*` and similar patterns.
+  a01-ci's #57 is right that ruff does not accept `/data`, so the `'/data'` I suggested for
+  ruff in #56 was wrong and `./data` or `data/*` is the working form. I merged no peer
+  branches because the task has no dependencies.
 
 ## Open issues
 
-* **Skeleton blocker, integrator-owned:** until `src/tabpack_repro/data/` is committed,
-  `tools/dev/check.sh` (and plain `ruff check`/`pytest`) fails in every worktree for the
-  reasons above. Nothing in this branch depends on it.
-* **Ruff exclude patterns, integrator-owned:** see finding #56. Until they are anchored, the
-  default `check.sh` run and the pre-commit hooks do not lint the data package. Use
-  `check.sh --paths src/tabpack_repro/data ...` in the meantime.
+* Resolved by `checkpoint/00b-data-fix`: the skeleton data package and the unanchored
+  `data` patterns (#56). Since that merge, `check.sh` and the pre-commit hooks lint
+  `src/tabpack_repro/data` and `tests/data`.
 * **Do not run `pre-commit install` while agents are running.** Worktrees share
   `.git/hooks`, so installing in one checkout turns the hooks on for all 55 branches, and
   `ruff-check --fix` would start rewriting their commits. pre-commit is not a project
