@@ -9,7 +9,7 @@ build/
 dist/
 
 # Data and large artifacts (download with `tabpack-repro download`)
-data/
+/data/
 runs/**/*.npz
 runs/**/*.pt
 
