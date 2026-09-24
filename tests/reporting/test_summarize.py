@@ -505,6 +505,17 @@ def test_summarize_k_from_data() -> None:
     )
 
 
+def test_summarize_prefers_top_level_n_models() -> None:
+    # TabPack reports K at the top level; unfinished members are not in 'members'.
+    report = tabpack_report(0)
+    report['n_models'] = 32
+    del report['config']['n_models']
+    row = _row(summarize([report]), 'tabpack')
+    assert row['n_models']['values'] == [32.0]
+    member_mean = statistics.mean(0.80 + 0.01 * i for i in range(6))
+    assert row['member_test']['values'] == [pytest.approx(member_mean)]
+
+
 def test_summarize_rejects_duplicate_seeds() -> None:
     with pytest.raises(ValueError, match="Duplicate 'mlp' run for seed 1"):
         summarize([mlp_report(1), mlp_report(0), mlp_report(1)])

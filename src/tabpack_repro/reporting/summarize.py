@@ -204,12 +204,19 @@ def _where(report: dict[str, Any]) -> str:
     return str(report.get('path', f'report of method {report.get("method")!r}'))
 
 
+def _n_models(report: dict[str, Any]) -> int | None:
+    """K: report["n_models"] (TabPack), else config["n_models"], else None."""
+    n_models = report.get('n_models')
+    if n_models is None and isinstance(report.get('config'), dict):
+        n_models = report['config'].get('n_models')
+    return n_models
+
+
 def _is_ensemble(report: dict[str, Any]) -> bool:
-    config = report.get('config')
     return (
         isinstance(report.get('ensemble'), dict)
         or len(report.get('members') or []) > 1
-        or (isinstance(config, dict) and 'n_models' in config)
+        or _n_models(report) is not None
     )
 
 
@@ -223,12 +230,10 @@ def _run_stats(report: dict[str, Any] | None) -> dict[str, float | None]:
     if not _is_ensemble(report):
         return stats
 
+    # Members are the FINISHED members; TabPack may stop before all K finish.
     members = report.get('members') or []
-    config = report.get('config')
-    n_models = config.get('n_models') if isinstance(config, dict) else None
-    if n_models is None and members:
-        n_models = len(members)
-    stats['n_models'] = n_models
+    n_models = _n_models(report)
+    stats['n_models'] = len(members) if n_models is None and members else n_models
 
     ensemble = report.get('ensemble')
     if isinstance(ensemble, dict):
