@@ -1,7 +1,8 @@
 """Tests for tabpack_repro.nn.pack_ops (a13).
 
 The core tests use small toy pack modules (params and buffers with a leading pack
-dimension K), so that they do not depend on the other nn modules.
+dimension K), so that they do not depend on the other nn modules; the last section
+checks the same properties on a real ModelPack.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import pytest
 import torch
 from torch import Tensor, nn
 
+from tabpack_repro.nn.model_pack import ModelPack
 from tabpack_repro.nn.pack_ops import (
     get_pack_size,
     make_keep_idx,
@@ -458,3 +460,131 @@ def test_pack_ops_on_cuda(cuda_device: torch.device, idx_on_device: bool) -> Non
     with torch.no_grad():
         actual = module(x)
     torch.testing.assert_close(actual[[0, 2]], expected[[0, 2]], rtol=0, atol=0)
+
+
+# >>> Integration with ModelPack (a09-a12)
+
+
+def _make_model_pack(n_classes: int | None = None) -> ModelPack:
+    torch.manual_seed(0)
+    return ModelPack(
+        n_num_features=4,
+        cat_cardinalities=[3, 2],
+        n_classes=n_classes,
+        pack_size=K,
+        d_block=8,
+        n_blocks=[1, 3, 2, 3, 1],
+        dropout=[0.0, 0.1, 0.2, 0.0, 0.3],
+    )
+
+
+def _model_inputs(n: int = 11) -> tuple[Tensor, Tensor]:
+    g = torch.Generator().manual_seed(2)
+    x_num = torch.randn(n, 4, generator=g)
+    x_cat = torch.stack(
+        [
+            torch.randint(0, 3, (n,), generator=g),
+            torch.randint(0, 2, (n,), generator=g),
+        ],
+        dim=1,
+    )
+    return x_num, x_cat
+
+
+def _perturb_params(model: ModelPack) -> None:
+    # Buffers (n_blocks, dropout rates) are structural: perturbing them could make
+    # the model invalid, so only the parameters change here.
+    with torch.no_grad():
+        for p in model.parameters():
+            p.add_(torch.randn_like(p))
+
+
+def _predict(model: ModelPack) -> Tensor:
+    model.eval()
+    with torch.no_grad():
+        return model(*_model_inputs())
+
+
+@pytest.mark.parametrize('n_classes', [None, 3])
+@pytest.mark.parametrize('keep', [[4, 0, 2], [1], [0, 1, 2, 3, 4], [3, 1]])
+def test_model_pack_select_keeps_outputs_and_parameters(
+    n_classes: int | None, keep: list[int]
+) -> None:
+    model = _make_model_pack(n_classes)
+    expected = _predict(model)[keep]
+    params = list(model.parameters())
+    n_blocks = model.backbone.n_blocks.clone()
+
+    pack_select_(model, torch.tensor(keep))
+
+    assert model.pack_size == len(keep)
+    assert get_pack_size(model) == len(keep)
+    assert model.backbone.n_blocks.tolist() == n_blocks[keep].tolist()
+    assert all(a is b for a, b in zip(model.parameters(), params, strict=True))
+    torch.testing.assert_close(_predict(model), expected, rtol=0, atol=0)
+
+
+def test_model_pack_select_empty_removal_and_all_but_one() -> None:
+    model = _make_model_pack()
+    expected = _predict(model)
+    pack_select_(model, make_keep_idx(K, torch.tensor([], dtype=torch.int64)))
+    torch.testing.assert_close(_predict(model), expected, rtol=0, atol=0)
+
+    pack_select_(model, make_keep_idx(K, torch.tensor([0, 2, 3, 4])))
+    assert model.pack_size == 1
+    torch.testing.assert_close(_predict(model), expected[[1]], rtol=0, atol=0)
+
+
+def test_model_pack_trains_after_select() -> None:
+    model = _make_model_pack().train()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    x_num, x_cat = _model_inputs()
+    model(x_num, x_cat).square().sum().backward()
+    optimizer.step()
+    optimizer.zero_grad()
+
+    pack_select_(model, torch.tensor([3, 1]))
+
+    before = [p.detach().clone() for p in model.parameters()]
+    loss = model(x_num, x_cat).square().sum()
+    loss.backward()
+    assert all(
+        p.grad is not None and p.grad.shape == p.shape for p in model.parameters()
+    )
+    optimizer.step()
+    changed = [
+        not torch.equal(p, b) for p, b in zip(model.parameters(), before, strict=True)
+    ]
+    assert any(changed)
+
+
+def test_model_pack_state_round_trip_and_selective_load() -> None:
+    model = _make_model_pack()
+    expected = _predict(model)
+    state = pack_state_dict(model)
+    assert set(state) >= set(model.state_dict())
+
+    _perturb_params(model)
+    perturbed = _predict(model)
+    assert not torch.equal(perturbed, expected)
+
+    pack_load_members_(model, state, torch.tensor([3, 1]))
+    actual = _predict(model)
+    torch.testing.assert_close(actual[[1, 3]], expected[[1, 3]], rtol=0, atol=0)
+    torch.testing.assert_close(actual[[0, 2, 4]], perturbed[[0, 2, 4]], rtol=0, atol=0)
+
+    pack_load_members_(model, state, torch.arange(K))
+    torch.testing.assert_close(_predict(model), expected, rtol=0, atol=0)
+    for name, x in pack_state_dict(model).items():
+        assert torch.equal(x, state[name]), name
+
+
+def test_model_pack_load_sliced_state_after_select() -> None:
+    model = _make_model_pack()
+    expected = _predict(model)
+    state = pack_state_dict(model)
+    _perturb_params(model)
+    keep = make_keep_idx(K, torch.tensor([0, 3]))  # [1, 2, 4]
+    pack_select_(model, keep)
+    pack_load_members_(model, {k: v[keep] for k, v in state.items()}, torch.arange(3))
+    torch.testing.assert_close(_predict(model), expected[keep], rtol=0, atol=0)
