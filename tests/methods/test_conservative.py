@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import json
 import statistics
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ import pytest
 
 from tabpack_repro.config import (
     ConservativeEvalConfig,
+    DataConfig,
     MLPMethodConfig,
     MuonAdamWConfig,
     OnlineEnsembleConfig,
@@ -534,3 +536,106 @@ def test_missing_seed_score_raises(monkeypatch, source_run, tmp_path):
     monkeypatch.setattr(tabpack, 'run', no_test_score)
     with pytest.raises(ValueError, match=r"seed-0 report has no metrics\['test'\]"):
         _run(source_run, tmp_path / 'out', n_seeds=1)
+
+
+# ---------------------------------------------------------------------------
+# end to end: a real TabPack source run on a tiny on-disk dataset
+# ---------------------------------------------------------------------------
+
+
+def _write_tiny_dataset(path: Path, n: int = 150) -> None:
+    """A learnable binclass dataset in the official on-disk format."""
+    rng = np.random.default_rng(0)
+    x_num = rng.normal(size=(n, 3)).astype(np.float32)
+    x_cat = rng.choice(np.array(['a', 'b', 'c']), size=(n, 1))
+    logits = x_num[:, 0] - x_num[:, 1] + (x_cat[:, 0] == 'a')
+    y = (logits + 0.3 * rng.normal(size=n) > 0.3).astype(np.int64)
+    path.mkdir(parents=True)
+    (path / 'info.json').write_text(
+        json.dumps({'task': {'type': 'binclass', 'score': 'accuracy'}})
+    )
+    np.save(path / 'x_num.npy', x_num)
+    np.save(path / 'x_cat.npy', x_cat)
+    np.save(path / 'y.npy', y)
+    split_dir = path / 'splits' / 'default'
+    split_dir.mkdir(parents=True)
+    perm = rng.permutation(n).astype(np.int64)
+    for part, idx in zip(
+        ('train', 'val', 'test'), np.split(perm, [90, 120]), strict=True
+    ):
+        np.save(split_dir / f'{part}.npy', np.sort(idx))
+
+
+@pytest.mark.slow
+def test_end_to_end_on_a_tiny_dataset(tmp_path, monkeypatch):
+    data_dir = tmp_path / 'data' / 'tiny'
+    _write_tiny_dataset(data_dir)
+    source_config = TabPackConfig(
+        seed=0,
+        n_models=4,
+        data=DataConfig(path=str(data_dir)),
+        d_block=8,
+        optimizer=MuonAdamWConfig(shared_step=False),
+        training=TrainingConfig(
+            batch_size=16,
+            patience=1,
+            max_epochs=3,
+            eval_batch_size=1024,
+            amp_dtype=None,
+            device='cpu',
+        ),
+        online_ensemble=OnlineEnsembleConfig(patience=4, max_ensemble_size=4),
+    )
+    source_dir = tmp_path / 'tabpack' / 'seed-0'
+    source = tabpack.run(source_config, source_dir)
+    selected = sorted(set(source['ensemble']['ids']))
+
+    real_run = tabpack.run
+    seeds: list[int] = []
+
+    def spy(config, output_dir):
+        seeds.append(config.seed)
+        return real_run(config, output_dir)
+
+    monkeypatch.setattr(tabpack, 'run', spy)
+    config = ConservativeEvalConfig(source_run=str(source_dir), n_seeds=2)
+    out = tmp_path / 'conservative'
+    report = conservative.run(config, out)
+
+    assert seeds == [0, 1]
+    assert report['method'] == 'tabpack-conservative'
+    assert report['selected_ids'] == selected
+    assert report['seeds'] == [0, 1]
+    selected_configs = [source['member_configs'][i] for i in selected]
+    for seed in (0, 1):
+        seed_dir = out / f'seed-{seed}'
+        seed_report = load_json(seed_dir / 'report.json')
+        assert seed_report['method'] == 'tabpack-conservative-seed'
+        assert seed_report['seed'] == seed
+        assert seed_report['n_models'] == len(selected)
+        assert seed_report['member_configs'] == selected_configs
+        for part in ('val', 'test'):
+            score = seed_report['metrics'][part]['score']
+            assert report['scores'][part][seed] == score
+            assert 0.0 <= score <= 1.0
+        assert load_config(seed_dir / 'config.toml') == dataclasses.replace(
+            source_config,
+            seed=seed,
+            n_models=len(selected),
+            configs=selected_configs,
+            optimizer=MuonAdamWConfig(shared_step=True),
+        )
+        assert (seed_dir / 'predictions.npz').is_file()
+    for part in ('val', 'test'):
+        assert report['mean'][part] == pytest.approx(
+            statistics.fmean(report['scores'][part])
+        )
+        assert report['std'][part] == pytest.approx(
+            statistics.stdev(report['scores'][part])
+        )
+    assert load_json(out / 'report.json') == to_jsonable(report)
+    assert load_config(out / 'config.toml') == config
+
+    # Resuming a finished evaluation retrains nothing and rebuilds the same report.
+    assert conservative.run(config, out) == report
+    assert seeds == [0, 1]
