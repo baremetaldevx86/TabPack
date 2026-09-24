@@ -28,7 +28,8 @@ from tabpack_repro.config import (
 )
 
 SRC_DIR = Path(cli.__file__).resolve().parents[1]
-CONFIGS_DIR = Path(__file__).resolve().parents[1] / 'configs' / 'churn'
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+CONFIGS_DIR = PROJECT_DIR / 'configs' / 'churn'
 SUBCOMMANDS = ['download', 'run', 'conservative', 'summarize', 'reference']
 RUN_METHODS = {
     'mlp': ('tabpack_repro.methods.mlp', MLPMethodConfig),
@@ -685,8 +686,7 @@ def test_run_real_invalid_config_exits_1(
 # ----------------------------------------------------------------------------------
 
 
-@pytest.mark.data
-def test_run_real_mlp_on_churn(churn_dir, tmp_path, capsys) -> None:
+def _tiny_mlp_config(churn_dir: Path, tmp_path: Path) -> Path:
     path = tmp_path / 'mlp-tiny.toml'
     path.write_text(
         'method = "mlp"\n'
@@ -694,6 +694,12 @@ def test_run_real_mlp_on_churn(churn_dir, tmp_path, capsys) -> None:
         '[model]\nn_blocks = 1\nd_block = 16\n'
         '[training]\nmax_epochs = 1\n'
     )
+    return path
+
+
+@pytest.mark.data
+def test_run_real_mlp_on_churn(churn_dir, tmp_path, capsys) -> None:
+    path = _tiny_mlp_config(churn_dir, tmp_path)
     output = tmp_path / 'runs' / 'mlp' / 'seed-1'
     argv = ['run', '--config', str(path), '--output', str(output)]
     assert cli.main([*argv, '--seed', '1', '--device', 'cpu']) == 0
@@ -710,3 +716,45 @@ def test_run_real_mlp_on_churn(churn_dir, tmp_path, capsys) -> None:
     assert result.startswith('mlp  seed=1  val_score=')
     assert f'test_score={test_score:.5f}' in result
     assert out_line == f'output: {output}'
+
+
+@pytest.mark.data
+def test_run_then_summarize_real(churn_dir, tmp_path, capsys) -> None:
+    path = _tiny_mlp_config(churn_dir, tmp_path)
+    runs_dir = tmp_path / 'runs'
+    scores = []
+    for seed in (0, 1):
+        output = runs_dir / 'mlp' / f'seed-{seed}'
+        argv = ['run', '--config', str(path), '--output', str(output), '--seed']
+        assert cli.main([*argv, str(seed), '--device', 'cpu']) == 0
+        report = json.loads((output / 'report.json').read_text())
+        scores.append(report['metrics']['test']['score'])
+    capsys.readouterr()
+
+    results = tmp_path / 'results'
+    argv = ['summarize', '--runs-dir', str(runs_dir), '--output', str(results)]
+    assert cli.main(argv) == 0
+    out = capsys.readouterr().out
+    for name in ('summary.json', 'summary.md', 'summary.csv'):
+        assert (results / name).is_file()
+    markdown = (results / 'summary.md').read_text()
+    assert out.startswith(markdown.rstrip('\n') + '\n\n')
+    assert 'summarized 2 run reports' in out
+    summary = json.loads((results / 'summary.json').read_text())
+    (row,) = summary['methods']
+    assert row['method'] == 'mlp'
+    assert row['test']['n'] == 2
+    assert row['test']['mean'] == pytest.approx(sum(scores) / 2)
+
+
+@pytest.mark.parity
+def test_reference_real_clone_matches_the_committed_file(tmp_path, capsys) -> None:
+    from tabpack_repro.reporting import reference
+
+    if reference.get_reference_dir() is None:
+        pytest.skip('Official TabPack clone not found (set TABPACK_REFERENCE_DIR)')
+    output = tmp_path / 'churn_official.json'
+    assert cli.main(['reference', '--output', str(output)]) == 0
+    committed = PROJECT_DIR / 'results' / 'reference' / 'churn_official.json'
+    assert output.read_bytes() == committed.read_bytes()
+    assert f'output: {output}' in capsys.readouterr().out

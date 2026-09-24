@@ -459,7 +459,7 @@ def _cmd_summarize(args: argparse.Namespace) -> int:
     summarize_lib.write_summary(summary, args.output)
     _out(summarize_lib.to_markdown(summary).rstrip('\n'))
     _out()
-    _out(f'summarized {len(runs)} run reports')
+    _out(f'summarized {len(runs)} run report{"" if len(runs) == 1 else "s"}')
     _out(f'output: {args.output} (summary.json, summary.md, summary.csv)')
     return _EXIT_OK
 
