@@ -408,3 +408,27 @@ def test_member_scores_only_n_blocks_recorded(tmp_path: Path) -> None:
     out = tmp_path / 'members.png'
     plot_member_scores(report, out)
     _assert_png(out)
+
+
+def test_method_comparison_from_a36_summarize(tmp_path: Path) -> None:
+    # Integration with reporting.summarize (a36): run reports -> summary -> figure.
+    from tabpack_repro.reporting.summarize import summarize
+
+    runs = []
+    for method, base in (('mlp', 0.852), ('homogeneous', 0.857), ('tabpack', 0.861)):
+        for seed in range(3):
+            report = make_tabpack_report(n_members=4, n_epochs=3)
+            report.update(method=method, seed=seed, path=f'{method}/{seed}')
+            report['metrics']['test']['score'] = base + 0.001 * seed
+            if method == 'mlp':
+                report.update(members=[], ensemble=None, best_member=None, config={})
+            runs.append(report)
+    summary = summarize(runs)
+    assert [r['method'] for r in summary['methods']] == [
+        'mlp',
+        'homogeneous',
+        'tabpack',
+    ]
+    out = tmp_path / 'comparison.png'
+    plot_method_comparison(summary, out)
+    _assert_png(out, min_bytes=20_000)
