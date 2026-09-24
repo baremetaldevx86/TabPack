@@ -1,0 +1,40 @@
+# Git hooks for tabpack-repro (https://pre-commit.com).
+#
+#   uvx pre-commit run --all-files     # check the whole checkout by hand
+#   uvx pre-commit install             # run on every commit (see the note below)
+#
+# pre-commit is not a project dependency; `uvx` runs it in an isolated tool env.
+# Note: git worktrees share .git/hooks, so `pre-commit install` in one checkout
+# enables the hooks for every worktree at once.
+#
+# Ruff is pinned to the version in uv.lock (0.16.8), so the hooks, `tools/dev/check.sh`
+# and CI agree; bump `rev` together with uv.lock. Ruff reads its settings from
+# pyproject.toml, and the hooks pass `--force-exclude`, so the paths excluded there
+# are skipped here as well.
+#
+# evidence/ holds session transcripts, diffs and board archives that must stay
+# byte-exact (see evidence/README.md), so the whitespace fixers and the size limit
+# never touch it. Everywhere else, files larger than 1 MiB need a deliberate decision.
+minimum_pre_commit_version: '3.2.0'
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^evidence/
+      - id: end-of-file-fixer
+        exclude: ^evidence/
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+        exclude: ^evidence/
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.8
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
