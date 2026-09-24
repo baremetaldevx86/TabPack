@@ -108,6 +108,10 @@ def pack_select_(module: nn.Module, keep_idx: Tensor) -> None:
     and set ``param.grad = None``) so that optimizer param groups stay valid; the
     optimizer state is sliced separately by optim.pack_utils.optimizer_select_.
     Buffers are replaced by their slices.
+
+    Call it only when no autograd graph that used the parameters is alive (e.g.
+    after backward/step, or after evaluation under no_grad): such a graph caches
+    the parameters' old shapes, and a later backward through it would fail.
     """
     # Validate everything before mutating, so that a bad call leaves `module` intact.
     pack_size = get_pack_size(module)
