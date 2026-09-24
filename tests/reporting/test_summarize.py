@@ -145,9 +145,18 @@ def _stdev(values: list[float]) -> float:
 def conservative_aggregate(seeds: list[int]) -> dict[str, Any]:
     test = [CONSERVATIVE[s][0] for s in seeds]
     val = [CONSERVATIVE[s][1] for s in seeds]
+    # Same keys as methods/conservative.py (a33) writes.
     return {
+        'schema_version': 1,
         'method': 'tabpack-conservative',
+        'dataset': 'churn',
+        'config': {
+            'method': 'tabpack-conservative',
+            'source_run': 'runs/churn/tabpack/seed-0',
+            'n_seeds': len(seeds),
+        },
         'source_run': 'runs/churn/tabpack/seed-0',
+        'source_seed': 0,
         'selected_ids': [3, 4, 5],
         'n_seeds': len(seeds),
         'seeds': seeds,
