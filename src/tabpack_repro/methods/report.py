@@ -21,6 +21,11 @@ report.json of a single run:
   "history": [...]                          # PackTrainResult.history (or per-epoch
                                            # dicts for the plain MLP)
 }
+TabPack runs additionally record (a32): "n_models", "n_finished",
+"member_configs" (all K sampled configs, list index = member id; needed because the
+online ensemble may select a member that never finished, so its config is absent
+from "members"; the official code uses experiments.json the same way),
+"online_ensemble" (OnlineGreedyEnsemble.report()) and "best_member"."config".
 Files next to report.json: ``predictions.npz`` with the final val/test predictions
 (keys "val", "test"), and ``config.toml`` (dump_config).
 
