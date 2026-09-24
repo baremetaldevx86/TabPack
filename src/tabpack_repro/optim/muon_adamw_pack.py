@@ -33,17 +33,9 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from tabpack_repro.optim.adamw_pack import (
-    PerMember,
-    _PackOptimizer,
-    _to_per_member,
-    adamw_update_,
-)
+from tabpack_repro.optim.adamw_pack import PerMember, _PackOptimizer, adamw_update_
 from tabpack_repro.optim.newton_schulz import zeropower_via_newtonschulz5
 
-# Per-member Muon keys that may also be None: muon_lr=None means "use lr" (official
-# semantics), muon_scale=None (or missing) means the default spectral scale.
-_NULLABLE_PER_MEMBER_KEYS = ('muon_lr', 'muon_scale')
 _MUON_STATE_KEY = 'muon_momentum_buffer'
 
 
@@ -91,7 +83,10 @@ class MuonAdamWPack(_PackOptimizer):
     Unlike the official code, the Nesterov step does not overwrite ``p.grad``.
     """
 
-    _per_member_keys = ('lr', 'weight_decay')
+    _per_member_keys = ('lr', 'weight_decay', 'muon_lr', 'muon_scale')
+    # muon_lr=None means "use lr" (official semantics); muon_scale=None (or missing)
+    # means the default spectral scale.
+    _nullable_keys = ('muon_lr', 'muon_scale')
 
     def __init__(
         self,
@@ -132,13 +127,7 @@ class MuonAdamWPack(_PackOptimizer):
             {
                 'lr': lr,
                 'weight_decay': weight_decay,
-                # Like lr / weight_decay in the base class: a float or a CPU float32
-                # (K,) tensor in the defaults (sliceable by optimizer_select_).
-                'muon_lr': (
-                    None
-                    if muon_lr is None
-                    else _to_per_member(muon_lr, pack_size, 'muon_lr')
-                ),
+                'muon_lr': muon_lr,
                 'muon': False,
                 'muon_momentum': float(muon_momentum),
                 'muon_nesterov': bool(muon_nesterov),
@@ -151,31 +140,18 @@ class MuonAdamWPack(_PackOptimizer):
             shared_step=bool(shared_step),
         )
 
-    def add_param_group(self, param_group: dict[str, Any]) -> None:
-        super().add_param_group(param_group)
-        group = self.param_groups[-1]
-        params: list[Tensor] = group['params']
-
+    def _normalize_group(self, group: dict[str, Any]) -> None:
+        # Called by _PackOptimizer.add_param_group, which drops the group on error.
         if not isinstance(group['muon'], bool):
             raise TypeError(f"group['muon'] must be a bool, got {group['muon']!r}")
         if group['muon']:
-            for p in params:
+            for p in group['params']:
                 if p.ndim != 3:
                     raise ValueError(
                         'Muon groups only accept 3-D (K, in, out) weights, got shape '
                         f'{tuple(p.shape)}'
                     )
-
-        # The base class already checked that the params share dim 0.
-        pack_size = params[0].shape[0] if params else self._pack_size
-        device = params[0].device if params else None
-        for key in _NULLABLE_PER_MEMBER_KEYS:
-            if group.get(key) is None:
-                continue
-            value = _to_per_member(group[key], pack_size, key)
-            if isinstance(value, Tensor) and device is not None:
-                value = value.to(device)
-            group[key] = value
+        super()._normalize_group(group)
 
     @torch.no_grad()
     def step(self, closure: Any = None) -> Any:
