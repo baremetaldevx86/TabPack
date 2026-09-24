@@ -18,6 +18,7 @@ from torch import Tensor, nn
 from tabpack_repro.optim.adamw_pack import (
     _SHARED_STATE_KEY,
     AdamWPack,
+    _PackOptimizer,
     adamw_update_,
 )
 
@@ -256,6 +257,39 @@ def test_invalid_hyperparameters_are_rejected() -> None:
         AdamWPack(_groups(params), lr=1e-3, pack_size=K + 1)
     with pytest.raises(ValueError, match='shape'):
         AdamWPack([{'params': [params['w1']], 'lr': [0.1, 0.2]}], lr=1e-3, pack_size=K)
+    with pytest.raises(TypeError):
+        AdamWPack(_groups(params), lr=None, pack_size=K)
+
+
+def test_failed_add_param_group_leaves_the_optimizer_unchanged() -> None:
+    params = _make_params()
+    opt = AdamWPack([{'params': [params['w1']]}], lr=LR, pack_size=K)
+    with pytest.raises(ValueError, match='shape'):
+        opt.add_param_group({'params': [params['w2']], 'lr': [0.1, 0.2]})
+    assert len(opt.param_groups) == 1
+    opt.add_param_group({'params': [params['w2']], 'lr': [0.1, 0.2, 0.3]})
+    assert len(opt.param_groups) == 2
+
+
+def test_nullable_per_member_keys_for_subclasses() -> None:
+    # MuonAdamWPack-style subclass: 'muon_lr' may be None ("fall back to lr").
+    class _Sub(_PackOptimizer):
+        _per_member_keys = ('lr', 'muon_lr')
+        _nullable_keys = ('muon_lr',)
+
+    params = _make_params()
+    opt = _Sub(
+        [
+            {'params': [params['w1']]},
+            {'params': [params['w2']], 'muon_lr': [0.1, 0.2, 0.3]},
+        ],
+        {'lr': LR, 'muon_lr': None},
+        pack_size=K,
+        shared_step=True,
+    )
+    assert opt.param_groups[0]['muon_lr'] is None
+    assert isinstance(opt.param_groups[1]['muon_lr'], Tensor)
+    assert isinstance(opt.param_groups[0]['lr'], Tensor)
 
 
 # ----------------------------------------------------------------------------------

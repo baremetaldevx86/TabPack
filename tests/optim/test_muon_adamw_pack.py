@@ -405,6 +405,28 @@ def test_hyperparameter_validation():
         )
 
 
+def test_invalid_param_group_added_later_is_rejected_cleanly():
+    w = _make_muon_param(4, 6)
+    optimizer = MuonAdamWPack(
+        [{'params': [w], 'muon': True}],
+        lr=LR,
+        weight_decay=WEIGHT_DECAY,
+        muon_lr=None,
+        pack_size=K,
+    )
+    assert optimizer.defaults['muon_lr'] is None
+    assert optimizer.param_groups[0]['muon_lr'] is None
+    with pytest.raises(ValueError):
+        optimizer.add_param_group(
+            {'params': [nn.Parameter(torch.zeros(K, 6))], 'muon': True}
+        )
+    assert len(optimizer.param_groups) == 1
+    optimizer.add_param_group(
+        {'params': [nn.Parameter(torch.zeros(K, 6))], 'lr': [0.1, 0.2, 0.3]}
+    )
+    assert torch.equal(optimizer.param_groups[1]['lr'], torch.tensor([0.1, 0.2, 0.3]))
+
+
 # >>> Non-Muon groups vs AdamWPack.
 
 
