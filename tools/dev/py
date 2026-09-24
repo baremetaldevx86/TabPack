@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Run the shared virtualenv's Python for THIS checkout (main repo or any worktree),
+# under a machine-wide concurrency slot.
+#
+#   tools/dev/py -m pytest tests/nn -q
+#   TABPACK_GPU=1 tools/dev/py -m tabpack_repro run ...   # GPU jobs (exclusive lock)
+#
+# Why: many agents share one 9 GB RAM laptop with one 8 GB GPU. Every Python process
+# that imports torch costs ~0.3-1 GB, so at most $TABPACK_SLOTS run at once, CUDA is
+# hidden unless TABPACK_GPU=1, and GPU jobs additionally serialize on one GPU lock.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+MAIN="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
+VENV="${TABPACK_VENV:-$MAIN/.venv}"
+SLOTS="${TABPACK_SLOTS:-4}"
+LOCKDIR="$MAIN/.coord/locks"
+mkdir -p "$LOCKDIR"
+
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+export TABPACK_DATA_DIR="${TABPACK_DATA_DIR:-$MAIN/data}"
+export TABPACK_REFERENCE_DIR="${TABPACK_REFERENCE_DIR:-$MAIN/.reference/tabpack}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-3}"
+export MKL_NUM_THREADS="$OMP_NUM_THREADS"
+export PYTHONDONTWRITEBYTECODE=1
+if [[ "${TABPACK_GPU:-0}" != "1" ]]; then
+  export CUDA_VISIBLE_DEVICES=""
+fi
+
+cd "$ROOT"
+while true; do
+  for i in $(seq 1 "$SLOTS"); do
+    exec {slot_fd}>"$LOCKDIR/slot-$i.lock"
+    if flock -n "$slot_fd"; then
+      if [[ "${TABPACK_GPU:-0}" == "1" ]]; then
+        exec {gpu_fd}>"$LOCKDIR/gpu.lock"
+        flock "$gpu_fd"
+      fi
+      # The locks are held by the inherited file descriptors until python exits.
+      exec timeout "${TABPACK_TIMEOUT:-1800}" "$VENV/bin/python" "$@"
+    fi
+    exec {slot_fd}>&-
+  done
+  sleep 2
+done
