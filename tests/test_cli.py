@@ -758,3 +758,37 @@ def test_reference_real_clone_matches_the_committed_file(tmp_path, capsys) -> No
     committed = PROJECT_DIR / 'results' / 'reference' / 'churn_official.json'
     assert output.read_bytes() == committed.read_bytes()
     assert f'output: {output}' in capsys.readouterr().out
+
+
+@pytest.mark.data
+@pytest.mark.parametrize(
+    ('method', 'toml'),
+    [
+        (
+            'homogeneous',
+            'n_models = 2\n[model]\nn_blocks = 1\nd_block = 16\n',
+        ),
+        ('tabpack', 'n_models = 3\nd_block = 16\n'),
+    ],
+)
+def test_run_real_pack_methods_on_churn(
+    method, toml, churn_dir, tmp_path, capsys
+) -> None:
+    path = tmp_path / f'{method}-tiny.toml'
+    path.write_text(
+        f'method = "{method}"\n{toml}'
+        f'[data]\npath = "{churn_dir.as_posix()}"\n'
+        '[training]\nmax_epochs = 1\n'
+    )
+    output = tmp_path / 'runs' / method / 'seed-2'
+    argv = ['run', '--config', str(path), '--output', str(output)]
+    assert cli.main([*argv, '--seed', '2', '--device', 'cpu']) == 0
+
+    report = json.loads((output / 'report.json').read_text())
+    assert report['method'] == method
+    assert report['seed'] == report['config']['seed'] == 2
+    assert report['config']['training']['device'] == 'cpu'
+    result, out_line = capsys.readouterr().out.splitlines()
+    assert result.startswith(f'{method}  seed=2  ')
+    assert f'test_score={report["metrics"]["test"]["score"]:.5f}' in result
+    assert out_line == f'output: {output}'
