@@ -792,3 +792,32 @@ def test_run_real_pack_methods_on_churn(
     assert result.startswith(f'{method}  seed=2  ')
     assert f'test_score={report["metrics"]["test"]["score"]:.5f}' in result
     assert out_line == f'output: {output}'
+
+
+@pytest.mark.data
+def test_conservative_real_on_churn(churn_dir, tmp_path, capsys) -> None:
+    path = tmp_path / 'tabpack-tiny.toml'
+    path.write_text(
+        'method = "tabpack"\nn_models = 3\nd_block = 16\n'
+        f'[data]\npath = "{churn_dir.as_posix()}"\n'
+        '[training]\nmax_epochs = 1\n'
+    )
+    source = tmp_path / 'runs' / 'tabpack' / 'seed-0'
+    argv = ['run', '--config', str(path), '--output', str(source)]
+    assert cli.main([*argv, '--device', 'cpu']) == 0
+    capsys.readouterr()
+
+    output = tmp_path / 'runs' / 'tabpack-conservative'
+    argv = ['conservative', '--source-run', str(source), '--n-seeds', '2']
+    assert cli.main([*argv, '--output', str(output)]) == 0
+    report = json.loads((output / 'report.json').read_text())
+    assert report['method'] == 'tabpack-conservative'
+    assert report['n_seeds'] == 2
+    for seed in (0, 1):
+        assert (output / f'seed-{seed}' / 'report.json').is_file()
+    result, out_line = capsys.readouterr().out.splitlines()
+    tests = report['scores']['test']
+    assert len(tests) == 2
+    assert result.startswith('tabpack-conservative  n_seeds=2  val_score=')
+    assert f'test_score={sum(tests) / 2:.5f}±' in result
+    assert out_line == f'output: {output}'

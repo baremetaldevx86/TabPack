@@ -31,7 +31,7 @@ tabpack-conservative config. `main` never raises `SystemExit`: `--help` returns 
 
 * `src/tabpack_repro/cli.py`: the implementation. The public API is only `main`.
   Every helper is private (`_build_parser`, `_execute`, `_cmd_*`, ...).
-* `tests/test_cli.py`: 66 tests.
+* `tests/test_cli.py`: 67 tests.
 * `evidence/agents/a34-cli.md`: this report.
 
 ## Design decisions
@@ -78,7 +78,7 @@ tabpack-conservative config. `main` never raises `SystemExit`: `--help` returns 
 
 ## Tests
 
-`tools/dev/py -m pytest tests/test_cli.py -q` gives **66 passed** in about 7 s (CPU).
+`tools/dev/py -m pytest tests/test_cli.py -q` gives **67 passed** in about 15 s (CPU).
 `tools/dev/py -m ruff check` and `ruff format --check` on both owned files pass.
 
 * Help: top-level and each subcommand's `--help` exit 0, and each lists the contract
@@ -102,6 +102,9 @@ tabpack-conservative config. `main` never raises `SystemExit`: `--help` returns 
   * a30, a31, a32 (`data` marker): tiny one-epoch MLP, homogeneous and TabPack
     runs on real Churn through `run --seed --device cpu`. `report.json` holds the
     overridden seed and device.
+  * a33 (`data` marker): a tiny TabPack source run, then `conservative --n-seeds 2`
+    through the CLI. The test checks the aggregate report, the per-seed reports and
+    the printed mean ± std.
   * a36 (`data` marker): two MLP seeds run through the CLI and are then summarized
     by the real `summarize`.
   * a38 (`parity` marker): `reference` reproduces the committed JSON byte for byte.
@@ -115,14 +118,11 @@ tabpack-conservative config. `main` never raises `SystemExit`: `--help` returns 
   JSON, which is what the CLI does.
 * Merged: `main` (setup), `feat/a28-config` (done #134),
   `feat/a30-method-mlp` (#138), `feat/a36-report-summarize` (#145),
-  `feat/a38-report-reference` (#151), `feat/a31-method-homogeneous` (#158) and
-  `feat/a32-method-tabpack` (#159).
+  `feat/a38-report-reference` (#151), `feat/a31-method-homogeneous` (#158),
+  `feat/a32-method-tabpack` (#159) and `feat/a33-method-conservative` (#167).
 
 ## Open issues
 
-* `feat/a33-method-conservative` had not posted `done` when this report was written.
-  `conservative` is tested only against a fake `conservative.run`, but it follows
-  a33's stated contract (#147).
 * `run` has no override for `training.max_epochs` or other fields. Smoke runs use a
   small TOML file, and every omitted key takes its default.
 * `--device` for `conservative` is not supported, because the frozen
