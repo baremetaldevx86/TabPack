@@ -28,6 +28,7 @@ from tabpack_repro.config import (
 )
 
 SRC_DIR = Path(cli.__file__).resolve().parents[1]
+CONFIGS_DIR = Path(__file__).resolve().parents[1] / 'configs' / 'churn'
 SUBCOMMANDS = ['download', 'run', 'conservative', 'summarize', 'reference']
 RUN_METHODS = {
     'mlp': ('tabpack_repro.methods.mlp', MLPMethodConfig),
@@ -53,6 +54,13 @@ def _report(method: str, seed: int = 0, test: float = 0.857, time_sec: float = 1
         'metrics': {'val': {'score': 0.87625}, 'test': {'score': test}},
         'time_sec': time_sec,
     }
+
+
+def _source_run(tmp_path: Path) -> Path:
+    source = tmp_path / 'runs' / 'tabpack' / 'seed-0'
+    source.mkdir(parents=True)
+    (source / 'report.json').write_text(json.dumps(_report('tabpack')))
+    return source
 
 
 class _FakeRun:
@@ -384,7 +392,8 @@ def test_run_conservative_config(
     monkeypatch, fake_load_config, tmp_path, capsys
 ) -> None:
     fakes = _install_fake_runs(monkeypatch)
-    config = ConservativeEvalConfig(source_run='runs/churn/tabpack/seed-0', n_seeds=3)
+    source = _source_run(tmp_path)
+    config = ConservativeEvalConfig(source_run=str(source), n_seeds=3)
     path = fake_load_config(config)
     argv = ['run', '--config', str(path), '--output', str(tmp_path / 'c')]
 
@@ -419,13 +428,6 @@ def test_run_handles_missing_report_fields(
 # ----------------------------------------------------------------------------------
 
 
-def _source_run(tmp_path: Path) -> Path:
-    source = tmp_path / 'runs' / 'tabpack' / 'seed-0'
-    source.mkdir(parents=True)
-    (source / 'report.json').write_text(json.dumps(_report('tabpack')))
-    return source
-
-
 def test_conservative_builds_the_config(monkeypatch, tmp_path, capsys) -> None:
     fakes = _install_fake_runs(monkeypatch)
     source = _source_run(tmp_path)
@@ -454,6 +456,15 @@ def test_conservative_missing_source_run_exits_1(monkeypatch, tmp_path, capsys):
     assert cli.main(argv) == 1
     err = capsys.readouterr().err
     assert f'source run report not found: {source / "report.json"}' in err
+    assert fakes['tabpack-conservative'].calls == []
+
+    # The same check applies to `run` with a tabpack-conservative config.
+    path = tmp_path / 'c.toml'
+    path.write_text('')
+    config = ConservativeEvalConfig(source_run=str(source))
+    monkeypatch.setattr(config_lib, 'load_config', lambda p: config)
+    assert cli.main(['run', '--config', str(path), '--output', str(tmp_path)]) == 1
+    assert 'source run report not found' in capsys.readouterr().err
     assert fakes['tabpack-conservative'].calls == []
 
 
@@ -594,3 +605,76 @@ def test_reference_without_clone_exits_1(monkeypatch, tmp_path, capsys) -> None:
     assert cli.main([*argv, str(tmp_path / 'missing')]) == 1
     assert 'reference directory not found' in capsys.readouterr().err
     assert not output.exists()
+
+
+# ----------------------------------------------------------------------------------
+# Real config files (a28's load_config and configs/churn/*.toml)
+# ----------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize('method', list(RUN_METHODS))
+def test_run_real_config_files(method, monkeypatch, tmp_path, capsys) -> None:
+    fakes = _install_fake_runs(monkeypatch)
+    path = CONFIGS_DIR / f'{method}.toml'
+    expected = config_lib.load_config(path)
+    assert isinstance(expected, RUN_METHODS[method][1])
+    output = tmp_path / method / 'seed-2'
+
+    argv = ['run', '--config', str(path), '--output', str(output)]
+    assert cli.main([*argv, '--seed', '2', '--device', 'cpu']) == 0
+    (got, got_output), *_ = fakes[method].calls
+    assert type(got) is type(expected)
+    assert got == dataclasses.replace(
+        expected, seed=2, training=dataclasses.replace(expected.training, device='cpu')
+    )
+    assert Path(got_output) == output
+    assert 'seed=2' in capsys.readouterr().out
+
+    assert cli.main(argv) == 0
+    assert fakes[method].calls[-1][0] == expected
+
+
+def test_run_real_conservative_config(monkeypatch, tmp_path, capsys) -> None:
+    # Its source_run (runs/churn/tabpack/seed-0) is relative to the working dir.
+    fakes = _install_fake_runs(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    path = CONFIGS_DIR / 'tabpack-conservative.toml'
+    argv = ['run', '--config', str(path), '--output', 'runs/churn/cons']
+
+    assert cli.main(argv) == 1
+    assert 'runs/churn/tabpack/seed-0/report.json' in capsys.readouterr().err
+
+    source = tmp_path / 'runs' / 'churn' / 'tabpack' / 'seed-0'
+    source.mkdir(parents=True)
+    (source / 'report.json').write_text('{}')
+    assert cli.main(argv) == 0
+    ((config, _),) = fakes['tabpack-conservative'].calls
+    assert config == ConservativeEvalConfig(
+        source_run='runs/churn/tabpack/seed-0', n_seeds=5
+    )
+    assert capsys.readouterr().out.startswith('tabpack-conservative  n_seeds=5')
+
+
+@pytest.mark.parametrize(
+    ('text', 'message'),
+    [
+        ('method = "mlp"\n[training]\npatiance = 3\n', 'patiance'),
+        ('method = "mlp"\nseed = "zero"\n', 'seed'),
+        ('method = "lightgbm"\n', 'lightgbm'),
+        ('method = "mlp"\n[training\n', 'TOMLDecodeError'),
+    ],
+)
+def test_run_real_invalid_config_exits_1(
+    text, message, monkeypatch, tmp_path, capsys
+) -> None:
+    fakes = _install_fake_runs(monkeypatch)
+    path = tmp_path / 'bad.toml'
+    path.write_text(text)
+    assert cli.main(['run', '--config', str(path), '--output', str(tmp_path)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    lines = captured.err.strip().splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith(f'tabpack-repro run: error: invalid config file {path}')
+    assert message in lines[0]
+    assert not any(f.calls for f in fakes.values())

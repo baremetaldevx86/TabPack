@@ -379,6 +379,30 @@ def _print_conservative_result(report: Any, *, elapsed: float) -> None:
     )
 
 
+def _execute(config: Any, output: Path) -> int:
+    """Run `config` with its method's run(), print the result and output path."""
+    method = getattr(config, 'method', None)
+    run = _method_runner(method)
+    if method == 'tabpack-conservative':
+        source_report = Path(config.source_run) / 'report.json'
+        if not source_report.is_file():
+            raise _CLIError(
+                f'source run report not found: {source_report} (run TabPack first: '
+                f'{_PROG} run --config configs/churn/tabpack.toml --seed 0 '
+                f'--output {config.source_run})'
+            )
+
+    start = time.perf_counter()
+    report = run(config, output)
+    elapsed = time.perf_counter() - start
+    if method == 'tabpack-conservative':
+        _print_conservative_result(report, elapsed=elapsed)
+    else:
+        _print_run_result(report, fallback_time=elapsed)
+    _out(f'output: {output}')
+    return _EXIT_OK
+
+
 # ----------------------------------------------------------------------------------
 # Subcommands
 # ----------------------------------------------------------------------------------
@@ -411,39 +435,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
         config = dataclasses.replace(
             config, training=dataclasses.replace(config.training, device=args.device)
         )
-    run = _method_runner(method)
-
-    start = time.perf_counter()
-    report = run(config, args.output)
-    elapsed = time.perf_counter() - start
-    if method == 'tabpack-conservative':
-        _print_conservative_result(report, elapsed=elapsed)
-    else:
-        _print_run_result(report, fallback_time=elapsed)
-    _out(f'output: {args.output}')
-    return _EXIT_OK
+    return _execute(config, args.output)
 
 
 def _cmd_conservative(args: argparse.Namespace) -> int:
     from tabpack_repro import config as config_lib
 
-    source_report = args.source_run / 'report.json'
-    if not source_report.is_file():
-        raise _CLIError(
-            f'source run report not found: {source_report} (run the TabPack method '
-            f'first: {_PROG} run --config configs/churn/tabpack.toml --seed 0 '
-            f'--output {args.source_run})'
-        )
     config = config_lib.ConservativeEvalConfig(
         source_run=str(args.source_run), n_seeds=args.n_seeds
     )
-    run = _method_runner(config.method)
-
-    start = time.perf_counter()
-    report = run(config, args.output)
-    _print_conservative_result(report, elapsed=time.perf_counter() - start)
-    _out(f'output: {args.output}')
-    return _EXIT_OK
+    return _execute(config, args.output)
 
 
 def _cmd_summarize(args: argparse.Namespace) -> int:
