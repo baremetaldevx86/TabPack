@@ -459,3 +459,183 @@ def test_absolute_path_is_used_as_is(fakes: Fakes, tmp_path: Path) -> None:
     build_dataset(DataConfig(path=str(tmp_path)))
     assert 'get_data_dir' not in fakes.calls
     assert fakes.args['load_raw_dataset'][0] == (tmp_path,)
+
+
+# ---------------------------------------------------------------------------
+# Integration: build_dataset with the real a03-a06 functions
+
+
+def _write_dataset(path: Path, arrays: dict[str, np.ndarray], splits: dict) -> Path:
+    (path / 'splits' / 'default').mkdir(parents=True)
+    (path / 'info.json').write_text(
+        '{"task": {"type": "binclass", "score": "accuracy"}}'
+    )
+    for name, value in arrays.items():
+        np.save(path / f'{name}.npy', value)
+    for part, idx in splits.items():
+        np.save(path / 'splits' / 'default' / f'{part}.npy', idx)
+    return path
+
+
+@pytest.fixture
+def tiny_dir(tmp_path: Path) -> Path:
+    """A small dataset in the official on-disk format exercising every step.
+
+    x_num columns: [continuous, binary {3, 7} (extracted), constant (dropped),
+    continuous with a NaN in test (-> 0)]; x_bin: one 0/1 column; x_cat: one
+    string column whose test part contains a category unseen in train.
+    """
+    rng = np.random.default_rng(0)
+    n = 40
+    x_num = np.stack(
+        [
+            rng.standard_normal(n),
+            np.where(np.arange(n) % 2 == 0, 3.0, 7.0),
+            np.full(n, 1.5),
+            rng.standard_normal(n),
+        ],
+        axis=1,
+    ).astype(np.float32)
+    x_num[-1, 3] = np.nan
+    x_cat = rng.choice(['b', 'a', 'c'], (n, 1))
+    x_cat[-2, 0] = 'unseen'
+    arrays = {
+        'x_num': x_num,
+        'x_bin': (np.arange(n) % 3 == 0).astype(np.float32)[:, None],
+        'x_cat': x_cat,
+        'y': (np.arange(n) % 2).astype(np.int64),
+    }
+    order = rng.permutation(n - 2)  # the last two rows (NaN, unseen) go to test
+    splits = {
+        'train': order[:24],
+        'val': order[24:32],
+        'test': np.concatenate([order[32:], [n - 2, n - 1]]),
+    }
+    return _write_dataset(tmp_path / 'tiny', arrays, splits)
+
+
+def test_real_pipeline_on_tiny_dataset(tiny_dir: Path) -> None:
+    ds = build_dataset(DataConfig(path=str(tiny_dir)))
+    x_num = np.load(tiny_dir / 'x_num.npy')
+    x_bin = np.load(tiny_dir / 'x_bin.npy')
+    x_cat = np.load(tiny_dir / 'x_cat.npy')
+    y = np.load(tiny_dir / 'y.npy')
+    idx = {p: np.load(tiny_dir / 'splits' / 'default' / f'{p}.npy') for p in PARTS}
+
+    assert ds.task.type_ == TaskType.BINCLASS
+    assert ds.task.n_classes == 2
+    assert [ds.size(p) for p in PARTS] == [24, 8, 8]
+    # Binary column extracted, constant column dropped.
+    assert ds.n_num_features == 2
+    # [x_cat, extracted binary, x_bin]
+    assert ds.cat_cardinalities == [3, 2, 2]
+    assert ds.x_num is not None and ds.x_cat is not None
+    for part in PARTS:
+        assert ds.x_num[part].dtype == torch.float32
+        assert torch.isfinite(ds.x_num[part]).all()
+        assert ds.x_cat[part].dtype == torch.int64
+        assert ds.y[part].dtype == torch.int64
+        np.testing.assert_array_equal(ds.y[part].numpy(), y[idx[part]])
+        codes = ds.x_cat[part].numpy()
+        # Ordinal codes follow sorted train categories; unseen -> train_max + 1.
+        expected = np.searchsorted(['a', 'b', 'c'], x_cat[idx[part], 0])
+        expected[x_cat[idx[part], 0] == 'unseen'] = 3
+        np.testing.assert_array_equal(codes[:, 0], expected)
+        np.testing.assert_array_equal(codes[:, 1], x_num[idx[part], 1] == 7.0)
+        np.testing.assert_array_equal(codes[:, 2], x_bin[idx[part], 0])
+    assert ds.x_cat['test'][-2, 0] == 3
+    assert ds.x_num['test'][-1, 1] == 0.0  # NaN -> 0
+    # The noisy-quantile transform is monotone per column on the train part.
+    for j, source in enumerate([0, 3]):
+        order = np.argsort(x_num[idx['train'], source], kind='stable')
+        assert np.all(np.diff(ds.x_num['train'][:, j].numpy()[order]) >= 0)
+
+
+def test_real_pipeline_is_deterministic_and_seeded(tiny_dir: Path) -> None:
+    a = build_dataset(DataConfig(path=str(tiny_dir)))
+    b = build_dataset(DataConfig(path=str(tiny_dir)))
+    c = build_dataset(DataConfig(path=str(tiny_dir), seed=1))
+    assert a.x_num is not None and b.x_num is not None and c.x_num is not None
+    for part in PARTS:
+        assert torch.equal(a.x_num[part], b.x_num[part])
+    assert not all(torch.equal(a.x_num[p], c.x_num[p]) for p in PARTS)
+
+
+def test_real_pipeline_resolves_relative_path(
+    tiny_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv('TABPACK_DATA_DIR', str(tiny_dir.parent))
+    relative = build_dataset(DataConfig(path='tiny'))
+    absolute = build_dataset(DataConfig(path=str(tiny_dir)))
+    for a, b in zip(_tensors(relative), _tensors(absolute), strict=True):
+        assert torch.equal(a, b)
+    assert relative.cat_cardinalities == absolute.cat_cardinalities
+
+
+def test_real_pipeline_missing_dataset_raises(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        build_dataset(DataConfig(path=str(tmp_path / 'missing')))
+
+
+# ---------------------------------------------------------------------------
+# Real Churn
+
+CHURN_SIZES = {'train': 6400, 'val': 1600, 'test': 2000}
+
+
+@pytest.fixture
+def churn(churn_dir: Path, monkeypatch: pytest.MonkeyPatch) -> PreparedDataset:
+    # The default config uses the relative path 'churn'.
+    monkeypatch.setenv('TABPACK_DATA_DIR', str(churn_dir.parent))
+    return build_dataset(DataConfig())
+
+
+@pytest.mark.data
+def test_churn_shapes_and_dtypes(churn: PreparedDataset) -> None:
+    assert churn.task.type_ == TaskType.BINCLASS
+    assert churn.task.n_classes == 2
+    # 7 numerical features (none of them binary); 1 categorical + 3 binary.
+    assert churn.n_num_features == 7
+    assert churn.cat_cardinalities == [3, 2, 2, 2]
+    assert churn.n_cat_features == 4
+    assert churn.x_num is not None and churn.x_cat is not None
+    for part, n in CHURN_SIZES.items():
+        assert churn.size(part) == n
+        x_num, x_cat, y = churn.x_num[part], churn.x_cat[part], churn.y[part]
+        assert x_num.shape == (n, 7)
+        assert x_num.dtype == torch.float32
+        assert not torch.isnan(x_num).any()
+        assert x_cat.shape == (n, 4)
+        assert x_cat.dtype == torch.int64
+        cards = torch.tensor(churn.cat_cardinalities)
+        assert (x_cat >= 0).all()
+        assert (x_cat < cards + 1).all()
+        assert y.shape == (n,)
+        assert y.dtype == torch.int64
+        assert set(y.unique().tolist()) <= {0, 1}
+        assert all(t.device.type == 'cpu' for t in (x_num, x_cat, y))
+    # Train codes cover exactly 0..cardinality-1 (official compute_cat_cardinalities).
+    train_cat = churn.x_cat['train']
+    for j, card in enumerate(churn.cat_cardinalities):
+        assert train_cat[:, j].unique().tolist() == list(range(card))
+    # Normal-output quantile transform: roughly standardized train features.
+    train_num = churn.x_num['train']
+    assert train_num.mean(0).abs().max() < 0.5
+    assert (train_num.abs() <= 6).all()
+
+
+@pytest.mark.data
+def test_churn_matches_absolute_path_and_to_cpu_round_trip(
+    churn: PreparedDataset, churn_dir: Path
+) -> None:
+    absolute = build_dataset(DataConfig(path=str(churn_dir)))
+    for a, b in zip(_tensors(churn), _tensors(absolute), strict=True):
+        assert torch.equal(a, b)
+    moved = churn.to('cpu')
+    assert moved is not churn
+    for a, b in zip(_tensors(moved), _tensors(churn), strict=True):
+        assert a.device.type == 'cpu'
+        assert a.dtype == b.dtype
+        assert torch.equal(a, b)
+    assert moved.cat_cardinalities == churn.cat_cardinalities
+    assert moved.task == churn.task
