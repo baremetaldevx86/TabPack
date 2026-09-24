@@ -1,0 +1,25 @@
+# TabPack, the paper's conservative evaluation protocol on Churn: method
+# "tabpack-conservative" (tabpack_repro.config.ConservativeEvalConfig).
+#
+# Takes the sorted unique member ids of the final online ensemble of a finished
+# TabPack run (source_run), and retrains only those configs from scratch, as a new
+# TabPack pack (configs = selected, n_models = len(selected)), once per seed
+# 0 .. n_seeds - 1. All other settings are copied from the source run's config.
+# The reported metric is the online-ensemble test score of each retraining run,
+# as mean +- std over the seeds. See docs/EXPERIMENT.md, section 5.3.
+#
+# Values equal the dataclass defaults in src/tabpack_repro/config.py, except
+# source_run, which the default leaves empty; tests/test_config.py checks this.
+# Omitted keys take their defaults, unknown keys are an error.
+#
+# Run (docs/EXPERIMENT.md, section 8; needs runs/churn/tabpack/seed-0/report.json):
+#   uv run python -m tabpack_repro conservative \
+#     --source-run runs/churn/tabpack/seed-0 --n-seeds 5 \
+#     --output runs/churn/tabpack-conservative
+
+method = "tabpack-conservative"
+# Directory of the finished TabPack main run (it contains report.json): TabPack
+# single run seed 0.
+source_run = "runs/churn/tabpack/seed-0"
+# Retraining seeds 0 .. n_seeds - 1 (official: 5).
+n_seeds = 5
