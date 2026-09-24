@@ -171,24 +171,48 @@ def _selected_ids(report: dict[str, Any]) -> list[int]:
 def _member_configs(
     report: dict[str, Any], selected_ids: list[int]
 ) -> list[dict[str, Any]]:
-    """The member configs of `selected_ids` (in that order) from report["members"]."""
-    members = report.get('members')
-    if not isinstance(members, list) or not members:
-        raise ValueError('the source run report has no "members" list')
+    """The member configs of `selected_ids` (in that order).
+
+    An ensemble can contain members that never finished (training ends when the
+    ensemble patience runs out), and report["members"] lists only finished ones.
+    So, like the official code (experiments.json), configs come from
+    report["member_configs"] (all n_models configs, index = member id) when present,
+    completed by report["members"]; the two must agree where both have a config.
+    """
     configs: dict[int, Any] = {}
+    all_configs = report.get('member_configs')
+    if all_configs is not None:
+        if not isinstance(all_configs, list):
+            raise ValueError('report["member_configs"] must be a list (index = id)')
+        configs.update(enumerate(all_configs))
+    members = report.get('members')
+    if members is None:
+        members = []
+    if not isinstance(members, list):
+        raise ValueError('report["members"] must be a list')
+    seen: set[int] = set()
     for member in members:
         member_id = member.get('id') if isinstance(member, dict) else None
         if not _is_int(member_id):
             raise ValueError(f'malformed member entry in the source report: {member!r}')
-        if member_id in configs:
+        if member_id in seen:
             raise ValueError(
                 f'member id {member_id} appears twice in the source report'
             )
-        configs[member_id] = member.get('config')
+        seen.add(member_id)
+        config = member.get('config')
+        if configs.get(member_id) is None:
+            configs[member_id] = config
+        elif config is not None and config != configs[member_id]:
+            raise ValueError(
+                f'member {member_id} has different configs in report["members"]'
+                ' and report["member_configs"]'
+            )
     missing = [i for i in selected_ids if i not in configs]
     if missing:
         raise ValueError(
-            f'ensemble member ids {missing} are missing from the source report members'
+            f'ensemble member ids {missing} are missing from the source report'
+            ' (neither in "member_configs" nor in "members")'
         )
     no_config = [i for i in selected_ids if not isinstance(configs[i], dict)]
     if no_config:
