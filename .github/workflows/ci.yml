@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to the same branch or pull request cancels the run it supersedes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.12.8"
+  PYTHON_VERSION: "3.12"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RUFF_OUTPUT_FORMAT: github
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-suffix: lint
+      # Only ruff is needed, so run the version pinned by uv.lock with uvx instead of
+      # installing the project (and torch).
+      - name: ruff check and ruff format --check
+        run: |
+          ruff_version="$(uv export --frozen --only-group dev --no-hashes --no-annotate \
+            --no-header | sed -n 's/^ruff==//p')"
+          test -n "$ruff_version"
+          make lint RUFF="uvx ruff@${ruff_version}"
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # `make install-cpu` swaps the locked CUDA torch for the CPU build; this keeps
+      # `uv run` from syncing it back.
+      UV_NO_SYNC: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-suffix: cpu
+      - name: Install locked dependencies with CPU-only torch
+        run: make install-cpu
+      - name: Fast CPU tests
+        run: make test
+
+  parity:
+    name: parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      UV_NO_SYNC: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-suffix: cpu
+      - name: Install locked dependencies with CPU-only torch
+        run: make install-cpu
+      # git clone https://github.com/yandex-research/tabpack .reference/tabpack
+      # git -C .reference/tabpack checkout 05a89e21b955f12de84889d662e15ca534019aaa
+      - name: Clone the official TabPack code at the pinned commit
+        run: make reference
+      - name: Parity tests against the official code
+        run: make test-parity

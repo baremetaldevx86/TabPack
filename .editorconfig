@@ -1,0 +1,40 @@
+# https://editorconfig.org
+# Matches ruff (pyproject.toml) and .pre-commit-config.yaml: UTF-8, LF, one final
+# newline, no trailing whitespace; 4-space Python, 2-space data and config files.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{py,pyi}]
+max_line_length = 88
+
+[*.{yml,yaml,toml,json,jsonc,ipynb}]
+indent_size = 2
+
+# Written by hand (pyproject.toml) or by uv (uv.lock) with 4-space arrays.
+[{pyproject.toml,uv.lock}]
+indent_size = 4
+
+[*.md]
+indent_size = 2
+
+[{*.sh,*.bash,tools/dev/py}]
+indent_size = 2
+
+[{Makefile,*.mk}]
+indent_style = tab
+
+# Transcripts, diffs and board archives are committed byte-exact: never rewrite them.
+[evidence/**]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = false
+indent_style = unset
+indent_size = unset
