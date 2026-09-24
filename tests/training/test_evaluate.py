@@ -15,6 +15,7 @@ from torch import Tensor, nn
 from tabpack_repro.data.dataset import TaskInfo
 from tabpack_repro.data.pipeline import PreparedDataset
 from tabpack_repro.metrics import make_score_fn
+from tabpack_repro.nn.model_pack import ModelPack
 from tabpack_repro.training.evaluate import (
     evaluate_pack,
     logits_to_predictions,
@@ -551,6 +552,121 @@ def test_evaluate_pack_empty_parts(dataset: PreparedDataset) -> None:
 
 
 # ---------------------------------------------------------------------------
+# A real ModelPack on the synthetic dataset
+# ---------------------------------------------------------------------------
+
+
+def _model_pack(dataset: PreparedDataset, *, seed: int = 0, **kwargs) -> ModelPack:
+    torch.manual_seed(seed)
+    config = {
+        'n_blocks': [1, 2, 3],
+        'dropout': [0.0, 0.3, 0.5],
+        'd_block': 16,
+        'pack_size': K,
+    } | kwargs
+    return ModelPack(
+        n_num_features=dataset.n_num_features,
+        cat_cardinalities=dataset.cat_cardinalities,
+        n_classes=dataset.task.n_classes,
+        **config,
+    )
+
+
+@pytest.mark.parametrize('task_type', list(TaskType))
+def test_model_pack_predictions_match_a_manual_forward(
+    dataset: PreparedDataset, task_type: TaskType
+) -> None:
+    dataset = _with_task(dataset, task_type)
+    model = _model_pack(dataset)
+    predictions = predict_pack(model, dataset, 'train', batch_size=20)
+    assert predictions.shape == _expected_shape(dataset, dataset.size('train'))
+    assert predictions.dtype == torch.float32
+    model.eval()
+    with torch.no_grad():
+        # Per-member (K, B, f) inputs: every member sees the same rows.
+        x_num = dataset.x_num['train'].expand(K, -1, -1).clone()
+        x_cat = dataset.x_cat['train'].expand(K, -1, -1).clone()
+        expected = logits_to_predictions(model(x_num, x_cat), task_type)
+    torch.testing.assert_close(predictions, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize('batch_size', [1, 13, 64, 97])
+def test_model_pack_batching_does_not_change_predictions(
+    dataset: PreparedDataset, batch_size: int
+) -> None:
+    model = _model_pack(dataset)
+    one_batch = predict_pack(model, dataset, 'train', batch_size=97)
+    batched = predict_pack(model, dataset, 'train', batch_size=batch_size)
+    torch.testing.assert_close(batched, one_batch, rtol=1e-5, atol=1e-6)
+
+
+def test_model_pack_dropout_is_off_and_train_mode_is_restored(
+    dataset: PreparedDataset,
+) -> None:
+    model = _model_pack(dataset, dropout=0.5)
+    model.train()
+    first = predict_pack(model, dataset, 'val')
+    second = predict_pack(model, dataset, 'val')
+    torch.testing.assert_close(first, second, rtol=0, atol=0)
+    assert all(module.training for module in model.modules())
+
+
+def test_model_pack_can_train_after_evaluation(dataset: PreparedDataset) -> None:
+    model = _model_pack(dataset)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    before = predict_pack(model, dataset, 'val')
+    # Inference mode did not leak into the parameters: a training step still works.
+    logits = model(
+        dataset.x_num['train'][:32].expand(K, -1, -1),
+        dataset.x_cat['train'][:32].expand(K, -1, -1),
+    )
+    target = dataset.y['train'][:32].float().expand(K, -1)
+    loss = nn.functional.binary_cross_entropy_with_logits(logits, target)
+    loss.backward()
+    optimizer.step()
+    after = predict_pack(model, dataset, 'val')
+    assert not torch.equal(before, after)
+
+
+def test_model_pack_evaluate_pack_scores(dataset: PreparedDataset) -> None:
+    model = _model_pack(dataset)
+    score_fns = _score_fns(dataset)
+    scores, predictions = evaluate_pack(
+        model, dataset, ['train', 'val', 'test'], score_fns, batch_size=32
+    )
+    for part in ('train', 'val', 'test'):
+        assert scores[part].shape == (K,)
+        assert scores[part].dtype == torch.float32
+        torch.testing.assert_close(
+            scores[part], score_fns[part](predictions[part]), rtol=0, atol=0
+        )
+        # Per-member accuracy agrees with the numpy definition.
+        labels = dataset.y[part]
+        for k in range(K):
+            accuracy = (predictions[part][k].round() == labels).float().mean()
+            assert scores[part][k].item() == pytest.approx(accuracy.item())
+
+
+def test_model_pack_oom_fallback(dataset: PreparedDataset, monkeypatch) -> None:
+    model = _model_pack(dataset)
+    reference = predict_pack(model, dataset, 'train')
+    forward = ModelPack.forward
+    sizes = []
+
+    def forward_with_oom(self, x_num, x_cat):
+        sizes.append(x_num.shape[0])
+        if x_num.shape[0] > 25:
+            raise torch.cuda.OutOfMemoryError('CUDA out of memory (fake)')
+        return forward(self, x_num, x_cat)
+
+    monkeypatch.setattr(ModelPack, 'forward', forward_with_oom)
+    predictions = predict_pack(model, dataset, 'train', batch_size=100)
+    torch.testing.assert_close(predictions, reference, rtol=1e-5, atol=1e-6)
+    # N=97: 97 (capped at N) and 50 fail, then 25-row batches.
+    assert sizes == [97, 50, 25, 25, 25, 22]
+
+
+# ---------------------------------------------------------------------------
 # GPU (skipped without CUDA)
 # ---------------------------------------------------------------------------
 
@@ -575,3 +691,32 @@ def test_predict_pack_on_cuda_matches_cpu(
         autocast=autocast,
     )
     assert scores['val'].device.type == 'cuda'
+
+
+@pytest.mark.gpu
+def test_model_pack_on_cuda_with_bfloat16_autocast(
+    dataset: PreparedDataset, cuda_device: torch.device
+) -> None:
+    model = _model_pack(dataset)
+    reference = predict_pack(model, dataset, 'val')
+    model.to(cuda_device)
+    cuda_dataset = dataclasses.replace(
+        dataset,
+        x_num={part: t.to(cuda_device) for part, t in dataset.x_num.items()},
+        x_cat={part: t.to(cuda_device) for part, t in dataset.x_cat.items()},
+        y={part: t.to(cuda_device) for part, t in dataset.y.items()},
+    )
+    autocast = torch.autocast('cuda', dtype=torch.bfloat16)
+    score_fns = _score_fns(cuda_dataset)
+    scores, predictions = evaluate_pack(
+        model, cuda_dataset, ['val'], score_fns, batch_size=16, autocast=autocast
+    )
+    assert predictions['val'].dtype == torch.float32
+    assert predictions['val'].device.type == 'cuda'
+    assert not torch.is_autocast_enabled('cuda')
+    torch.testing.assert_close(
+        predictions['val'].cpu(), reference, rtol=0.05, atol=0.02
+    )
+    torch.testing.assert_close(
+        scores['val'], score_fns['val'](predictions['val']), rtol=0, atol=0
+    )
