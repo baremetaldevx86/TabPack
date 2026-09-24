@@ -72,13 +72,16 @@ wheels (several GB). The Makefile is the single source of the commands, so runni
   should pass.
 * `make reference REFERENCE_DIR=<scratch>` did a real clone to `05a89e2` in 3 s, and a
   second run was a no-op.
-* Ran the CI lint step verbatim (`make lint RUFF="uvx ruff@0.16.8"`). In this worktree
-  it fails with I001 in `tests/_helpers.py` and `tests/conftest.py` only because the
-  `tabpack_repro.data` package is missing from git (see Open issues). The same ruff
-  version passes `check` and `format --check` on the main checkout, which has the
-  untracked data package (read-only run, `--no-cache`).
-* `make test RUN="tools/dev/py -m"` runs the right command but currently errors at
-  conftest import (`No module named 'tabpack_repro.data'`), the same skeleton blocker.
+* Ran the CI lint step verbatim (`make lint RUFF="uvx ruff@0.16.8"`). Before the
+  skeleton data fix it failed with I001 in `tests/_helpers.py` and `tests/conftest.py`,
+  because `tabpack_repro.data` was missing from git. After merging
+  `checkpoint/00b-data-fix` it passes: `All checks passed!` and `59 files already
+  formatted`.
+* `make test RUN="tools/dev/py -m"` (the fast CPU selection through the slot runner)
+  gives `1 passed in 0.03s` after the merge.
+* `make test-parity RUN="tools/dev/py -m" REFERENCE_DIR=<scratch clone>` clones, checks
+  out and runs `pytest tests/parity -q`. It exits with 5 (`no tests ran`) because no
+  parity tests exist yet (see Open issues).
 
 ## Coordination
 
@@ -88,17 +91,16 @@ wheels (several GB). The Makefile is the single source of the commands, so runni
   failure is caused by the missing data package.
 * Posted #61 to a35 describing how `make experiment` and `make report` call
   `scripts/run_churn.sh` and the `summarize` CLI.
-* Read the data-package blocker reports #6, #7, #12, #20, #14 and #43. No messages were
-  addressed to a01. No peer branches were merged, since there are no runtime
-  dependencies.
+* Read the data-package blocker reports #6, #7, #12, #20, #14 and #43. In #62 the
+  integrator confirmed that `extend-exclude 'data/*'` fixes the ruff scope and asked me
+  to merge `checkpoint/00b-data-fix`, which I did (`git merge --no-edit`). No peer
+  branches were merged, since there are no runtime dependencies.
 
 ## Open issues
 
-* **CI will be red until the skeleton data fix lands**: `.gitignore` `data/` keeps
-  `src/tabpack_repro/data/` and `tests/data/` out of git, so a fresh checkout fails both
-  lint (I001) and every test (conftest import). The fix belongs to the integrator:
-  change `.gitignore` to `/data/`, change pyproject `extend-exclude` to `"./data"`, and
-  commit the data package.
+* The skeleton data-package problem (`.gitignore` `data/`) is fixed by
+  `checkpoint/00b-data-fix`, and CI needs that fix: without it, lint (I001) and every
+  test (conftest import) fail on a fresh checkout.
 * `pytest tests/parity` exits with code 5 ("no tests collected") until at least one of
   a39-a43 is merged, so the `parity` job fails on a tree without parity tests.
 * `make experiment` assumes `scripts/run_churn.sh` (a35) can be run with `bash` from the
