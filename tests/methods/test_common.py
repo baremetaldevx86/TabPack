@@ -407,3 +407,82 @@ def test_write_run_rejects_wrong_prediction_keys(fake_deps, tmp_path, keys):
         common.write_run(output_dir, {}, predictions, MLPMethodConfig())
     # Validation happens before anything is written.
     assert not output_dir.exists()
+
+
+# ---------------------------------------------------------------------------
+# real dependencies (a07 pipeline, a28 config, a29 utils) and real Churn data
+# ---------------------------------------------------------------------------
+
+_CHURN_SIZES = {'train': 6400, 'val': 1600, 'test': 2000}
+
+
+@pytest.fixture
+def churn_ctx(churn_dir) -> common.RunContext:
+    training = TrainingConfig(device='cpu', amp_dtype=None)
+    return common.setup_run(0, DataConfig(path=str(churn_dir)), training)
+
+
+@pytest.mark.data
+def test_setup_run_real_churn_dataset(churn_ctx):
+    ctx = churn_ctx
+    assert ctx.device == torch.device('cpu')
+    assert ctx.autocast is None
+    dataset = ctx.dataset
+    assert {part: dataset.size(part) for part in PARTS} == _CHURN_SIZES
+    assert dataset.n_num_features == 7
+    assert dataset.cat_cardinalities == [3, 2, 2, 2]
+    assert dataset.task.type_ == 'binclass'
+    assert dataset.task.score == 'accuracy'
+    for part in PARTS:
+        assert dataset.y[part].device.type == 'cpu'
+        assert dataset.x_num[part].dtype == torch.float32
+        assert dataset.x_cat[part].dtype == torch.int64
+        y = ctx.y_true[part]
+        assert isinstance(y, np.ndarray)
+        assert y.shape == (_CHURN_SIZES[part],)
+        assert set(np.unique(y)) == {0, 1}
+        np.testing.assert_array_equal(y, dataset.y[part].numpy())
+
+
+@pytest.mark.data
+def test_setup_run_real_churn_score_fns(churn_ctx):
+    from tabpack_repro.metrics import compute_metrics
+
+    ctx = churn_ctx
+    generator = torch.Generator().manual_seed(0)
+    for part in PARTS:
+        y = ctx.dataset.y[part]
+        n = _CHURN_SIZES[part]
+        random = torch.rand(n, generator=generator)
+        predictions = torch.stack([y.float(), torch.zeros(n), random])
+        scores = ctx.score_fns[part](predictions)
+        assert scores.shape == (3,)
+        assert scores[0].item() == 1.0
+        # Predicting "no churn" everywhere scores the majority-class rate.
+        assert scores[1].item() == pytest.approx(1.0 - ctx.y_true[part].mean())
+        expected = compute_metrics(ctx.y_true[part], random.numpy(), ctx.dataset.task)
+        assert scores[2].item() == pytest.approx(expected['score'])
+
+
+@pytest.mark.data
+def test_setup_run_real_env(churn_ctx):
+    env = churn_ctx.env
+    assert {'device', 'gpu', 'torch', 'git_commit'} <= set(env)
+    assert env['device'] == 'cpu'
+    assert env['gpu'] is None
+    assert env['torch'] == torch.__version__
+    # The tests run inside a git checkout.
+    assert isinstance(env['git_commit'], str)
+    assert len(env['git_commit']) == 40
+
+
+@pytest.mark.data
+def test_setup_run_real_seeds_global_rngs(churn_dir):
+    data = DataConfig(path=str(churn_dir))
+    training = TrainingConfig(device='cpu', amp_dtype=None)
+    draws = []
+    for _ in range(2):
+        common.setup_run(123, data, training)
+        draws.append((torch.rand(4), np.random.rand(4)))
+    torch.testing.assert_close(draws[0][0], draws[1][0], rtol=0, atol=0)
+    np.testing.assert_array_equal(draws[0][1], draws[1][1])
